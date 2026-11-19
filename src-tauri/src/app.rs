@@ -1,4 +1,4 @@
-use crate::{commands, process_groups, tray};
+use crate::{commands, monitor, process_groups, tray};
 use tauri::{AppHandle, Manager, WindowEvent};
 
 pub(crate) fn worker_exit_code() -> Option<i32> {
@@ -6,7 +6,7 @@ pub(crate) fn worker_exit_code() -> Option<i32> {
     {
         let args: Vec<_> = std::env::args().collect();
         if args.get(1).map(String::as_str) == Some("--firewall-worker") {
-            return Some(crate::windows::worker(&args[2..]));
+            return Some(crate::windows::elevated_worker(&args[2..]));
         }
     }
     None
@@ -18,6 +18,7 @@ pub(crate) fn reveal(app: &AppHandle) {
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
+    monitor::set_visible(true);
 }
 
 pub(crate) fn run() {
@@ -38,19 +39,27 @@ pub(crate) fn run() {
             commands::save_rules,
             commands::vpn_targets,
             commands::guard_status,
-            commands::change_protection
+            commands::change_protection,
+            commands::diagnose,
+            commands::core_rules_state,
+            commands::reload_core,
+            commands::detect_client,
+            commands::set_window_visible
         ])
         .setup(|app| {
             tray::build_tray(app)?;
             #[cfg(windows)]
-            tray::monitor(app.handle().clone());
-            tray::monitor_config(app.handle().clone());
+            monitor::monitor(app.handle().clone());
+            monitor::monitor_config(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
+                if window.label() == "main" {
+                    monitor::set_visible(false);
+                }
             }
         })
         .run(tauri::generate_context!())

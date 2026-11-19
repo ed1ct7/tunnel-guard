@@ -121,7 +121,7 @@ pub(crate) fn edit_settings(
         return Ok(current);
     }
     #[cfg(windows)]
-    if !state_allows_settings_edit(crate::windows::status()?.state) {
+    if !state_allows_settings_edit(crate::status::read_status()?.state) {
         return Err("Сначала выключи защиту.".into());
     }
     client_path(&settings)?;

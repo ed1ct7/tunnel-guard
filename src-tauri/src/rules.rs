@@ -1,4 +1,5 @@
 use crate::{
+    history,
     settings::{atomic_write, client_path, load_settings, lock_config, storage, Settings},
     status::read_vpn_targets,
     Result,
@@ -24,12 +25,16 @@ pub(crate) fn parse_mixin(raw: &[u8]) -> Result<Mapping> {
     }
 }
 
-fn mixin(settings: &Settings) -> Result<(PathBuf, Vec<u8>, Mapping)> {
-    let client = client_path(settings)?;
-    let path = client
+/// `guiConfigs/Mixin.yaml` next to the configured v2rayN.exe (not read).
+pub(crate) fn mixin_path(settings: &Settings) -> Result<PathBuf> {
+    Ok(client_path(settings)?
         .parent()
         .ok_or("Папка v2rayN не найдена.")?
-        .join("guiConfigs/Mixin.yaml");
+        .join("guiConfigs/Mixin.yaml"))
+}
+
+pub(crate) fn mixin(settings: &Settings) -> Result<(PathBuf, Vec<u8>, Mapping)> {
+    let path = mixin_path(settings)?;
     let raw = fs::read(&path).map_err(|_| "В выбранной папке нет guiConfigs/Mixin.yaml.")?;
     let root = parse_mixin(&raw)?;
     Ok((path, raw, root))
@@ -227,8 +232,18 @@ pub(crate) fn edit_rules(
     if fs::read(&path).map_err(|error| error.to_string())? != raw {
         return Err("Mixin.yaml изменился в другой программе. Обнови список и повтори.".into());
     }
+    let previous_at = history::file_mtime_ms(&path);
     atomic_write(&path.with_file_name("Mixin.yaml.tunnelguard.bak"), &raw)?;
     atomic_write(&path, next.as_bytes())?;
+    // Best effort, never fails the edit: remember the list the running core
+    // may still use and the new one, so core_rules can tell them apart.
+    if let Some(at) = previous_at {
+        let _ = history::record(&current, at);
+    }
+    let _ = history::record(
+        &rules,
+        history::file_mtime_ms(&path).unwrap_or_else(crate::status::now_ms),
+    );
     Ok(rules)
 }
 

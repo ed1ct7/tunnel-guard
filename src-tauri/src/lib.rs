@@ -1,10 +1,19 @@
 mod app;
 mod cli;
 mod commands;
+mod core_rules;
+mod detect;
+mod diagnose;
+mod history;
+mod http;
+mod monitor;
 mod process_groups;
+mod progress;
 mod rules;
 mod settings;
 mod status;
+#[cfg(test)]
+mod test_support;
 mod tray;
 #[cfg(windows)]
 mod windows;

@@ -1,13 +1,12 @@
 use crate::{
     app::reveal,
-    rules::config_snapshot,
     status::{GuardState, Status},
 };
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter,
+    AppHandle,
 };
 
 const ICON_ON: &[u8] = include_bytes!("../icons/on.png");
@@ -62,56 +61,16 @@ pub(crate) fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
-pub(crate) fn monitor(app: AppHandle) {
-    std::thread::spawn(move || {
-        let mut last = None;
-        loop {
-            let status = crate::windows::status().unwrap_or(Status {
-                state: GuardState::Unknown,
-                adapter_up: false,
-            });
-            if last.as_ref() != Some(&status) {
-                last = Some(status.clone());
-                let target = app.clone();
-                if app
-                    .run_on_main_thread(move || {
-                        update_tray(&target, &status);
-                        let _ = target.emit("guard-state", status);
-                    })
-                    .is_err()
-                {
-                    return;
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_secs(8));
-        }
-    });
-}
-
-pub(crate) fn monitor_config(app: AppHandle) {
-    std::thread::spawn(move || {
-        let mut last = None;
-        loop {
-            if let Ok(snapshot) = config_snapshot() {
-                if last.as_ref() != Some(&snapshot) {
-                    last = Some(snapshot.clone());
-                    if app.emit("guard-config", snapshot).is_err() {
-                        return;
-                    }
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_secs(2));
-        }
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn view(state: GuardState, adapter_up: bool) -> (&'static [u8], &'static str) {
-        tray_view(&Status { state, adapter_up })
+        tray_view(&Status {
+            state,
+            adapter_up,
+            checked_at: 0,
+        })
     }
 
     #[test]

@@ -1,8 +1,9 @@
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Status','Rules','Targets','Preflight','Enable','Disable','CleanLegacy')]
+    [ValidateSet('Status','Rules','Targets','Diagnose','Preflight','Enable','Disable','CleanLegacy')]
     [string] $Action,
-    [string] $SettingsPath
+    [string] $SettingsPath,
+    [string] $ProgressPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,8 +16,28 @@ $legacy = @('Server4KillSwitch-Tunnel','Server4KillSwitch-Mihomo','Server4KillSw
 $backup = Join-Path (Split-Path -Parent $SettingsPath) 'original-policy.xml'
 $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
 
+$progressAction = @{Enable='enable';Disable='disable';CleanLegacy='clean_legacy'}[$Action]
+
+# Reports a stage to the panel. Best effort: any failure is swallowed, writes
+# nothing to the pipeline and touches no script variable, so it can never
+# change the outcome of the operation.
+function Set-GuardProgress([string] $ProgressStage) {
+    if (-not $ProgressPath -or -not $progressAction) { return }
+    try {
+        $progressAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        $progressJson = @{action=$progressAction;stage=$ProgressStage;at=$progressAt} | ConvertTo-Json -Compress
+        $progressTemp = "$ProgressPath.tmp"
+        [IO.File]::WriteAllText($progressTemp, $progressJson, [Text.UTF8Encoding]::new($false))
+        Move-Item -LiteralPath $progressTemp -Destination $ProgressPath -Force
+    } catch { }
+}
+
 function Get-GuardState {
-    $rules = @(Get-NetFirewallRule -PolicyStore ActiveStore)
+    # Every owned name starts with 'TunnelGuard-' and every legacy name with
+    # 'Server4KillSwitch-', so this name query returns a superset of the rules
+    # the exact filters below keep (wildcard name match is case-insensitive,
+    # like -in). Errors stay terminating, as with the full listing.
+    $rules = @(Get-NetFirewallRule -PolicyStore ActiveStore -Name 'TunnelGuard-*','Server4KillSwitch-*')
     $ours = @($rules | Where-Object Name -in $owned)
     $old = @($rules | Where-Object Name -in $legacy)
     $profiles = @(Get-NetFirewallProfile -PolicyStore ActiveStore)
@@ -146,6 +167,35 @@ try {
         }
         exit 0
     }
+    if ($Action -eq 'Diagnose') {
+        # Read-only facts for the panel's diagnosis; needs no administrator rights.
+        $diagAdapter = [string] $env:TUNNEL_GUARD_DIAG_ADAPTER
+        $diagPort = [int] $env:TUNNEL_GUARD_DIAG_PORT
+        $diagControllerPort = [int] $env:TUNNEL_GUARD_DIAG_CONTROLLER
+        $diagNic = $null
+        if ($diagAdapter) { $diagNic = Get-NetAdapter -Name $diagAdapter -ErrorAction SilentlyContinue | Select-Object -First 1 }
+        $diagLoopback = @('127.0.0.1', '0.0.0.0', '::', '::1')
+        $diagProxy = @()
+        $diagController = @()
+        if ($diagPort -ge 1 -and $diagPort -le 65535) {
+            $diagProxy = @(Get-NetTCPConnection -LocalPort $diagPort -State Listen -ErrorAction SilentlyContinue |
+                Where-Object { $_.LocalAddress -in $diagLoopback } |
+                ForEach-Object { [int] $_.OwningProcess } | Sort-Object -Unique)
+        }
+        if ($diagControllerPort -ge 1 -and $diagControllerPort -le 65535) {
+            $diagController = @(Get-NetTCPConnection -LocalPort $diagControllerPort -State Listen -ErrorAction SilentlyContinue |
+                Where-Object { $_.LocalAddress -in $diagLoopback } |
+                ForEach-Object { [int] $_.OwningProcess } | Sort-Object -Unique)
+        }
+        [pscustomobject] @{
+            adapter_exists = [bool] $diagNic
+            adapter_status = if ($diagNic) { [string] $diagNic.Status } else { $null }
+            client_running = @(Get-Process -Name v2rayN -ErrorAction SilentlyContinue).Count -gt 0
+            proxy_pids = [int[]] $diagProxy
+            controller_pids = [int[]] $diagController
+        } | ConvertTo-Json -Compress
+        exit 0
+    }
     if ($Action -eq 'Preflight') {
         $stage = 'SETTINGS'
         $connection = Read-ConnectionSettings
@@ -172,7 +222,9 @@ try {
     $stage = 'POLICY'
     if ($Action -eq 'CleanLegacy' -or $state -eq 'LegacyInactive') {
         if ($state -ne 'LegacyInactive') { throw 'Legacy cleanup requires the old protection to be off.' }
+        Set-GuardProgress 'cleanup'
         Remove-GuardRules $legacy
+        Set-GuardProgress 'policy'
         Refresh-Policy
         $state = Get-GuardState
         if ($state -ne 'Off') { throw 'Some previous rules remain active.' }
@@ -181,6 +233,7 @@ try {
     if ($Action -eq 'Disable') {
         if ($state -eq 'Off') { exit 0 }
         $stage = 'RESTORE'
+        Set-GuardProgress 'restore'
         Restore-Guard
         exit 0
     }
@@ -189,8 +242,10 @@ try {
     if ($state -ne 'Off') { throw 'Restore the previous firewall policy first.' }
 
     $stage = 'SETTINGS'
+    Set-GuardProgress 'settings'
     $connection = Read-ConnectionSettings
     $stage = 'TUN'
+    Set-GuardProgress 'tun'
     Assert-TunReady $connection $true
     $tunnel = $connection.tunnel
     $core = $connection.core
@@ -206,6 +261,7 @@ try {
     if (-not $gateway) { throw 'No physical IPv4 route was found for the fail-closed test.' }
 
     $proxy = "http://127.0.0.1:$port"
+    Set-GuardProgress 'egress'
     $expected = Get-ProbeIP $proxy
     if ((Get-ProbeIP) -ne $expected) { throw 'Windows and the selected VPN proxy use different egress addresses.' }
     $stage = 'CONFLICT'
@@ -227,8 +283,10 @@ try {
             -NextHop $gateway.NextHop -PolicyStore ActiveStore
         if (-not (Test-Tcp $probe)) { throw 'The direct verification endpoint is unavailable before applying protection.' }
         $stage = 'POLICY'
+        Set-GuardProgress 'backup'
         $saved | Export-Clixml -LiteralPath $backup
         $started = $true
+        Set-GuardProgress 'apply'
         $allow = @{PolicyStore=$store;Group='Tunnel Guard';Direction='Outbound';Action='Allow';Profile='Any'}
         New-NetFirewallRule @allow -Name $owned[0] -DisplayName 'Tunnel Guard - tunnel' -InterfaceAlias $tunnel | Out-Null
         New-NetFirewallRule @allow -Name $owned[1] -DisplayName 'Tunnel Guard - Mihomo' -Program $core | Out-Null
@@ -236,7 +294,9 @@ try {
             -Service Dhcp -Protocol UDP -LocalPort 68 -RemotePort 67 | Out-Null
         Set-NetFirewallProfile -PolicyStore $store -All -Enabled True `
             -DefaultOutboundAction Block -AllowLocalFirewallRules False
+        Set-GuardProgress 'policy'
         Refresh-Policy
+        Set-GuardProgress 'verify'
         if ((Get-GuardState) -ne 'On') { throw 'Windows did not enforce the expected firewall policy.' }
         $stage = 'VERIFY'
         if ((Get-ProbeIP) -ne $expected) { throw 'VPN connectivity was lost after applying protection.' }
@@ -245,6 +305,7 @@ try {
         if ($started) {
             $failedStage = $stage
             $stage = 'RESTORE'
+            Set-GuardProgress 'restore'
             Restore-Guard
             $stage = $failedStage
         }

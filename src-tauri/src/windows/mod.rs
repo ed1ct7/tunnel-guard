@@ -1,20 +1,34 @@
 use crate::{
+    progress::{parse_progress, Progress, ProgressStage, PROGRESS_FILE},
     settings::{lock_config, storage},
-    status::{Action, Status},
+    status::{now_ms, Action, Status},
     Result,
 };
 use std::{
     env,
     ffi::OsStr,
-    io,
+    fs, io,
     os::windows::{ffi::OsStrExt, process::CommandExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Output},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+    time::Duration,
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, HWND},
-    System::Threading::{GetExitCodeProcess, WaitForSingleObject, CREATE_NO_WINDOW, INFINITE},
+    Foundation::{CloseHandle, HWND, INVALID_HANDLE_VALUE},
+    System::{
+        Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        },
+        Threading::{
+            GetExitCodeProcess, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject,
+            CREATE_NO_WINDOW, INFINITE, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        },
+    },
     UI::{
         Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
         WindowsAndMessaging::SW_SHOWNORMAL,
@@ -23,15 +37,29 @@ use windows_sys::Win32::{
 
 static CHANGE: Mutex<()> = Mutex::new(());
 const SCRIPT: &str = include_str!("firewall.ps1");
+const PROGRESS_POLL: Duration = Duration::from_millis(250);
 
 fn powershell(action: &str) -> Result<Output> {
+    run_script(action, None, &[])
+}
+
+fn run_script(action: &str, progress: Option<&Path>, extra: &[(&str, &OsStr)]) -> Result<Output> {
     let executable = PathBuf::from(env::var_os("SystemRoot").ok_or("SystemRoot не найден.")?)
         .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let command = format!("& {{\n{SCRIPT}\n}} -Action $env:TUNNEL_GUARD_ACTION -SettingsPath $env:TUNNEL_GUARD_SETTINGS");
-    Command::new(executable)
+    let command = format!("& {{\n{SCRIPT}\n}} -Action $env:TUNNEL_GUARD_ACTION -SettingsPath $env:TUNNEL_GUARD_SETTINGS -ProgressPath $env:TUNNEL_GUARD_PROGRESS");
+    let mut process = Command::new(executable);
+    process
         .args(["-NoProfile", "-NonInteractive", "-Command", &command])
         .env("TUNNEL_GUARD_ACTION", action)
-        .env("TUNNEL_GUARD_SETTINGS", storage()?.join("settings.json"))
+        .env("TUNNEL_GUARD_SETTINGS", storage()?.join("settings.json"));
+    match progress {
+        Some(path) => process.env("TUNNEL_GUARD_PROGRESS", path),
+        None => process.env_remove("TUNNEL_GUARD_PROGRESS"),
+    };
+    for (key, value) in extra {
+        process.env(key, value);
+    }
+    process
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|error| error.to_string())
@@ -69,7 +97,93 @@ fn read_controller(action: &str) -> Result<serde_json::Value> {
         .map_err(|_| "Не удалось прочитать список активных правил.".into())
 }
 
+/// Read-only system facts for the diagnosis (adapter, listeners, v2rayN).
+/// `adapter` must already be validated (no wildcard characters).
+pub fn diagnose_facts(
+    adapter: Option<&str>,
+    proxy_port: Option<u16>,
+    controller_port: Option<u16>,
+) -> Result<serde_json::Value> {
+    let port = |port: Option<u16>| port.map(|port| port.to_string()).unwrap_or_default();
+    let (proxy_port, controller_port) = (port(proxy_port), port(controller_port));
+    let output = run_script(
+        "Diagnose",
+        None,
+        &[
+            (
+                "TUNNEL_GUARD_DIAG_ADAPTER",
+                OsStr::new(adapter.unwrap_or_default()),
+            ),
+            ("TUNNEL_GUARD_DIAG_PORT", OsStr::new(&proxy_port)),
+            ("TUNNEL_GUARD_DIAG_CONTROLLER", OsStr::new(&controller_port)),
+        ],
+    )?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().into());
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|_| "Не удалось прочитать состояние системы.".into())
+}
+
+/// Full image paths of running processes named `image` (e.g. "v2rayN.exe").
+/// `None` for a process whose path cannot be queried.
+pub fn running_images(image: &str) -> Vec<Option<PathBuf>> {
+    let mut found = Vec::new();
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE || snapshot.is_null() {
+            return found;
+        }
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut more = Process32FirstW(snapshot, &mut entry) != 0;
+        while more {
+            let length = entry
+                .szExeFile
+                .iter()
+                .position(|&unit| unit == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..length]);
+            if name.eq_ignore_ascii_case(image) {
+                found.push(process_path(entry.th32ProcessID));
+            }
+            more = Process32NextW(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+    }
+    found
+}
+
+unsafe fn process_path(pid: u32) -> Option<PathBuf> {
+    let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+    if process.is_null() {
+        return None;
+    }
+    let mut buffer = vec![0u16; 32768];
+    let mut size = buffer.len() as u32;
+    let ok =
+        QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buffer.as_mut_ptr(), &mut size);
+    CloseHandle(process);
+    (ok != 0).then(|| {
+        use std::os::windows::ffi::OsStringExt;
+        PathBuf::from(std::ffi::OsString::from_wide(&buffer[..size as usize]))
+    })
+}
+
+/// Entry point of the GUI's elevated `--firewall-worker`: like `worker`, and
+/// additionally lets the script report stages to the progress file.
+pub fn elevated_worker(args: &[String]) -> i32 {
+    let progress = storage().ok().map(|dir| dir.join(PROGRESS_FILE));
+    run_worker(args, progress.as_deref())
+}
+
 pub fn worker(args: &[String]) -> i32 {
+    run_worker(args, None)
+}
+
+fn run_worker(args: &[String], progress: Option<&Path>) -> i32 {
     let [action] = args else { return 20 };
     if !matches!(action.as_str(), "Enable" | "Disable" | "CleanLegacy") {
         return 20;
@@ -77,7 +191,7 @@ pub fn worker(args: &[String]) -> i32 {
     let Ok(_config_lock) = lock_config() else {
         return 28;
     };
-    let Ok(output) = powershell(action) else {
+    let Ok(output) = run_script(action, progress, &[]) else {
         return 21;
     };
     if output.status.success() {
@@ -103,11 +217,119 @@ fn failure_code(stderr: &[u8]) -> u32 {
     }
 }
 
-pub fn elevate(action: Action, parent: isize) -> Result<()> {
+pub(crate) type Report<'a> = &'a (dyn Fn(Progress) + Sync);
+
+/// The worker's progress file for one operation. Best effort throughout:
+/// nothing here can change the result of the operation.
+struct ProgressFile {
+    path: Option<PathBuf>,
+    action: Action,
+    since: u64,
+}
+
+impl ProgressFile {
+    fn start(action: Action) -> Self {
+        let file = Self {
+            path: storage().ok().map(|dir| dir.join(PROGRESS_FILE)),
+            action,
+            since: now_ms(),
+        };
+        file.remove();
+        file
+    }
+
+    fn remove(&self) {
+        if let Some(path) = &self.path {
+            let _ = fs::remove_file(path);
+            let _ = fs::remove_file(path.with_extension("json.tmp"));
+        }
+    }
+
+    fn emit(&self, report: Report, stage: ProgressStage) {
+        let progress = Progress {
+            action: self.action,
+            stage,
+            at: now_ms(),
+        };
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| report(progress)));
+    }
+
+    fn poll(&self, report: Report, last: &mut Option<Progress>) {
+        let Some(path) = &self.path else { return };
+        let Ok(raw) = fs::read(path) else { return };
+        if let Some(progress) = parse_progress(&raw, self.action, self.since) {
+            if *last != Some(progress) {
+                *last = Some(progress);
+                report(progress);
+            }
+        }
+    }
+
+    /// Run `wait` on this thread while a watcher forwards new stages.
+    fn watch<T>(&self, report: Report, wait: impl FnOnce() -> T) -> T {
+        let stop = AtomicBool::new(false);
+        let last = Mutex::new(None);
+        let result = std::thread::scope(|scope| {
+            let watcher = std::thread::Builder::new().spawn_scoped(scope, || {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    while !stop.load(Ordering::SeqCst) {
+                        if let Ok(mut last) = last.lock() {
+                            self.poll(report, &mut last);
+                        }
+                        std::thread::sleep(PROGRESS_POLL);
+                    }
+                }));
+            });
+            let result = wait();
+            stop.store(true, Ordering::SeqCst);
+            if let Ok(watcher) = watcher {
+                let _ = watcher.join();
+            }
+            result
+        });
+        // Catch the last stage written just before the worker exited.
+        if let Ok(mut last) = last.lock() {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.poll(report, &mut last)
+            }));
+        }
+        result
+    }
+}
+
+impl Drop for ProgressFile {
+    fn drop(&mut self) {
+        self.remove();
+    }
+}
+
+/// Run one protection change through UAC. `report` receives `guard-progress`
+/// stages, ending with `done` or `failed` once the operation has started.
+pub fn elevate(action: Action, parent: isize, report: Report) -> Result<()> {
     let _operation = CHANGE
         .try_lock()
         .map_err(|_| "Другая операция уже выполняется.")?;
+    let progress = ProgressFile::start(action);
+    let result = run_elevated(action, parent, report, &progress);
+    progress.emit(
+        report,
+        if result.is_ok() {
+            ProgressStage::Done
+        } else {
+            ProgressStage::Failed
+        },
+    );
+    result
+}
+
+fn run_elevated(
+    action: Action,
+    parent: isize,
+    report: Report,
+    progress: &ProgressFile,
+) -> Result<()> {
     if matches!(action, Action::Enable) {
+        progress.emit(report, ProgressStage::Preflight);
         let check = powershell("Preflight")?;
         if !check.status.success() {
             return worker_result(failure_code(&check.stderr));
@@ -130,6 +352,7 @@ pub fn elevate(action: Action, parent: isize) -> Result<()> {
         nShow: SW_SHOWNORMAL,
         ..Default::default()
     };
+    progress.emit(report, ProgressStage::Elevate);
     unsafe {
         if ShellExecuteExW(&mut request) == 0 || request.hProcess.is_null() {
             let error = io::Error::last_os_error();
@@ -139,7 +362,8 @@ pub fn elevate(action: Action, parent: isize) -> Result<()> {
                 format!("Windows не запустила запрос администратора. {error}")
             });
         }
-        let wait = WaitForSingleObject(request.hProcess, INFINITE);
+        let process = request.hProcess;
+        let wait = progress.watch(report, || WaitForSingleObject(process, INFINITE));
         let mut code = 0;
         let read = GetExitCodeProcess(request.hProcess, &mut code);
         CloseHandle(request.hProcess);
@@ -167,4 +391,74 @@ pub fn worker_result(code: u32) -> Result<()> {
 
 fn wide(value: &OsStr) -> Vec<u16> {
     value.encode_wide().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_codes_follow_stage_marker() {
+        assert_eq!(failure_code(b"TG_STAGE:TUN\r\nmessage"), 23);
+        assert_eq!(failure_code(b"  TG_STAGE:POLICY  \n"), 30);
+        assert_eq!(failure_code(b"no marker"), 27);
+    }
+
+    #[test]
+    fn progress_file_watch_forwards_new_stages_and_cleans_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PROGRESS_FILE);
+        fs::write(&path, br#"{"action":"enable","stage":"tun","at":1}"#).unwrap();
+        let file = ProgressFile {
+            path: Some(path.clone()),
+            action: Action::Enable,
+            since: 0,
+        };
+        file.remove();
+        assert!(!path.exists());
+        let seen = Mutex::new(Vec::new());
+        let report = |progress: Progress| seen.lock().unwrap().push(progress.stage);
+        let value = file.watch(&report, || {
+            for stage in ["settings", "tun", "tun", "apply"] {
+                let json = format!(
+                    r#"{{"action":"enable","stage":"{stage}","at":{}}}"#,
+                    if stage == "apply" {
+                        3
+                    } else if stage == "tun" {
+                        2
+                    } else {
+                        1
+                    }
+                );
+                fs::write(&path, json).unwrap();
+                std::thread::sleep(PROGRESS_POLL * 2);
+            }
+            // other action / garbage are ignored
+            fs::write(&path, br#"{"action":"disable","stage":"restore","at":9}"#).unwrap();
+            std::thread::sleep(PROGRESS_POLL * 2);
+            7
+        });
+        assert_eq!(value, 7);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                ProgressStage::Settings,
+                ProgressStage::Tun,
+                ProgressStage::Apply
+            ]
+        );
+        drop(file);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn watch_without_path_just_waits() {
+        let file = ProgressFile {
+            path: None,
+            action: Action::Disable,
+            since: 0,
+        };
+        let report = |_: Progress| panic!("no events expected");
+        assert_eq!(file.watch(&report, || 5), 5);
+    }
 }

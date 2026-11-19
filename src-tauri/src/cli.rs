@@ -1,4 +1,6 @@
 use crate::{
+    core_rules,
+    diagnose::diagnose,
     rules::{config_snapshot, edit_rules, load_rules, upsert_rule, ConfigSnapshot, DIRECT_DEFAULT},
     settings::{edit_settings, load_settings, open_client},
     status::{active_rules, apply_protection_headless, read_status, read_vpn_targets, Action},
@@ -47,6 +49,21 @@ enum Command {
     },
     /// Start the configured v2rayN executable.
     StartClient,
+    /// Read-only readiness check of v2rayN, Mihomo and the TUN adapter.
+    Doctor,
+    /// Compare or push the saved bypass rules to the running Mihomo.
+    Core {
+        #[command(subcommand)]
+        command: CoreCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum CoreCommand {
+    /// Whether the running Mihomo uses the saved bypass rules (read-only).
+    State,
+    /// Load the saved bypass rules into the running Mihomo (no restart).
+    Reload,
 }
 
 #[derive(Subcommand)]
@@ -279,6 +296,14 @@ fn execute(command: Command) -> Result<Value> {
         Command::StartClient => {
             open_client()?;
             Ok(json!({ "started": true }))
+        }
+        Command::Doctor => Ok(json!({ "diagnosis": diagnose()? })),
+        Command::Core { command } => {
+            let state = match command {
+                CoreCommand::State => core_rules::state()?,
+                CoreCommand::Reload => core_rules::reload()?,
+            };
+            Ok(json!({ "core_rules": state }))
         }
     }
 }
