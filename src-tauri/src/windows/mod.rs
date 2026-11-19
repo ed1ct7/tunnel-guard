@@ -1,4 +1,8 @@
-use super::{lock_config, storage, Action, Result, Status};
+use crate::{
+    settings::{lock_config, storage},
+    status::{Action, Status},
+    Result,
+};
 use std::{
     env,
     ffi::OsStr,

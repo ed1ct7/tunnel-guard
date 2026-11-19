@@ -1,7 +1,8 @@
-use crate::backend::{
-    active_rules, apply_protection_headless, config_snapshot, edit_rules, edit_settings,
-    load_rules, load_settings, open_client, read_status, read_vpn_targets, upsert_rule, Action,
-    ConfigSnapshot, Result, DIRECT_DEFAULT,
+use crate::{
+    rules::{config_snapshot, edit_rules, load_rules, upsert_rule, ConfigSnapshot, DIRECT_DEFAULT},
+    settings::{edit_settings, load_settings, open_client},
+    status::{active_rules, apply_protection_headless, read_status, read_vpn_targets, Action},
+    Result,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::{json, Value};

@@ -1,4 +1,7 @@
-use crate::backend::{atomic_write, lock_config, storage, Result};
+use crate::{
+    settings::{atomic_write, lock_config, storage},
+    Result,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashSet, fs, path::Path};
@@ -222,4 +225,186 @@ fn run_windows(selectors: &[Selector], stop: bool) -> Result<Value> {
     }
     serde_json::from_slice(&output.stdout)
         .map_err(|_| "Не удалось прочитать результат поиска процессов.".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn name(value: &str) -> Selector {
+        Selector::Name {
+            value: value.into(),
+        }
+    }
+
+    fn group(id: &str, selectors: Vec<Selector>, includes: &[&str]) -> Group {
+        Group {
+            id: id.into(),
+            title: format!("Title {id}"),
+            selectors,
+            includes: includes.iter().map(|item| (*item).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn names_must_be_bare_exe() {
+        assert!(valid_name("app.exe"));
+        assert!(valid_name("APP.EXE"));
+        for bad in [
+            "app", "a/b.exe", r"a\b.exe", "c:a.exe", "a*.exe", "a?.exe", "a|b.exe", "a\n.exe", "",
+        ] {
+            assert!(!valid_name(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn atoms_respect_allowed_punctuation() {
+        assert!(valid_atom("my-group_1", b"_-"));
+        assert!(!valid_atom("", b"_-"));
+        assert!(!valid_atom("a b", b"_-"));
+        assert!(!valid_atom("a.b", b"_-"));
+        assert!(valid_atom("a.b", b"._-"));
+    }
+
+    #[test]
+    fn selector_validation() {
+        assert!(name("a.exe").valid());
+        assert!(!name("a").valid());
+        let path = |value: &str| Selector::Path {
+            value: value.into(),
+        };
+        assert!(!path("a.exe").valid());
+        let dir = tempfile::tempdir().unwrap();
+        assert!(path(&dir.path().join("a.exe").to_string_lossy()).valid());
+        assert!(!path(&dir.path().join("a.txt").to_string_lossy()).valid());
+        let family = |value: &str| Selector::PackageFamily {
+            value: value.into(),
+        };
+        assert!(family("Vendor.App_abc123").valid());
+        assert!(!family("NoUnderscore").valid());
+        assert!(!family("Bad Name_x").valid());
+        let service = |value: &str| Selector::Service {
+            value: value.into(),
+        };
+        assert!(service("Spooler").valid());
+        assert!(service("svc$1").valid());
+        assert!(!service("bad name").valid());
+        let argument = |image: &str, value: &str| Selector::Argument {
+            image: image.into(),
+            value: value.into(),
+        };
+        assert!(argument("node.exe", "--port=1").valid());
+        assert!(!argument("node", "--port=1").valid());
+        assert!(!argument("node.exe", "  ").valid());
+        assert!(!argument("node.exe", "a\nb").valid());
+    }
+
+    #[test]
+    fn groups_validation() {
+        let ok = Groups {
+            groups: vec![group("a", vec![name("a.exe")], &[])],
+        };
+        assert!(ok.validate().is_ok());
+        let empty = Groups { groups: vec![] };
+        assert!(empty.validate().is_ok());
+
+        let unique = "У каждой группы должны быть уникальный ID и название.";
+        let dup = Groups {
+            groups: vec![
+                group("a", vec![name("a.exe")], &[]),
+                group("a", vec![name("b.exe")], &[]),
+            ],
+        };
+        assert_eq!(dup.validate().unwrap_err(), unique);
+        let bad_id = Groups {
+            groups: vec![group("a b", vec![name("a.exe")], &[])],
+        };
+        assert_eq!(bad_id.validate().unwrap_err(), unique);
+        let mut untitled = group("a", vec![name("a.exe")], &[]);
+        untitled.title = "  ".into();
+        assert_eq!(
+            Groups {
+                groups: vec![untitled]
+            }
+            .validate()
+            .unwrap_err(),
+            unique
+        );
+
+        let bad_selector = Groups {
+            groups: vec![group("a", vec![name("nope")], &[])],
+        };
+        assert_eq!(
+            bad_selector.validate().unwrap_err(),
+            "Проверь условия поиска в группе «Title a»."
+        );
+        let no_selectors = Groups {
+            groups: vec![group("a", vec![], &[])],
+        };
+        assert_eq!(
+            no_selectors.validate().unwrap_err(),
+            "В группе «a» нет условий поиска."
+        );
+    }
+
+    #[test]
+    fn resolve_follows_includes_and_dedups() {
+        let groups = Groups {
+            groups: vec![
+                group("top", vec![name("a.exe")], &["left", "right"]),
+                group("left", vec![name("b.exe")], &["shared"]),
+                group("right", vec![name("c.exe")], &["shared"]),
+                group("shared", vec![name("a.exe"), name("d.exe")], &[]),
+            ],
+        };
+        assert_eq!(
+            groups.resolve("top").unwrap(),
+            vec![name("a.exe"), name("b.exe"), name("d.exe"), name("c.exe")]
+        );
+        assert!(groups.validate().is_ok());
+    }
+
+    #[test]
+    fn resolve_detects_cycles() {
+        let groups = Groups {
+            groups: vec![
+                group("a", vec![name("a.exe")], &["b"]),
+                group("b", vec![name("b.exe")], &["a"]),
+            ],
+        };
+        assert_eq!(
+            groups.resolve("a").unwrap_err(),
+            "Группа «a» включена сама в себя."
+        );
+        assert!(groups.validate().is_err());
+        let selfref = Groups {
+            groups: vec![group("a", vec![name("a.exe")], &["a"])],
+        };
+        assert!(selfref.resolve("a").is_err());
+    }
+
+    #[test]
+    fn resolve_reports_missing_ids() {
+        let groups = Groups {
+            groups: vec![group("a", vec![name("a.exe")], &["ghost"])],
+        };
+        assert_eq!(
+            groups.resolve("a").unwrap_err(),
+            "Группа «ghost» не найдена."
+        );
+        assert_eq!(
+            groups.resolve("other").unwrap_err(),
+            "Группа «other» не найдена."
+        );
+    }
+
+    #[test]
+    fn config_rejects_unknown_fields() {
+        assert!(serde_json::from_str::<Groups>(r#"{"groups":[],"x":1}"#).is_err());
+        let ok: Groups = serde_json::from_str(
+            r#"{"groups":[{"id":"a","title":"A","selectors":[{"kind":"name","value":"a.exe"}]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(ok.groups[0].selectors, vec![name("a.exe")]);
+    }
 }
