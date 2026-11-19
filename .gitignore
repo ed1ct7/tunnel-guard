@@ -1,0 +1,23 @@
+# Node / Vite
+node_modules/
+dist/
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/gen/
+
+# .NET (legacy)
+legacy/dotnet/bin/
+legacy/dotnet/obj/
+
+# Editors / OS
+.vs/
+.vscode/
+.idea/
+*.user
+Thumbs.db
+.DS_Store
+
+# Local env
+.env
+.env.*
