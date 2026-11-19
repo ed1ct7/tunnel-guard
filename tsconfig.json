@@ -1,11 +1,18 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022", "ESNext.Disposable", "DOM"],
+    "lib": ["ES2023", "ESNext.Disposable", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
     "noEmit": true
   },
   "include": ["src"]

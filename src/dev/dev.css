@@ -1,0 +1,69 @@
+/* Development-only styles; imported by DevSwitcher, so production CSS never contains them. */
+.dev-toggle,
+.dev-panel {
+  position: fixed;
+  bottom: 12px;
+  left: 12px;
+  z-index: 100;
+  border: 1px dashed var(--warn);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  font-size: var(--text-xs);
+}
+
+.dev-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  color: var(--warn);
+  font-family: var(--font-mono);
+  opacity: 0.9;
+}
+
+.dev-panel {
+  display: grid;
+  gap: 8px;
+  width: 300px;
+  padding: 10px;
+  box-shadow: var(--shadow);
+}
+
+.dev-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--warn);
+}
+
+.dev-close {
+  display: inline-flex;
+  padding: 2px;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+}
+
+.dev-field {
+  display: grid;
+  gap: 4px;
+}
+
+.dev-field select {
+  width: 100%;
+  height: 28px;
+  font-size: var(--text-xs);
+}
+
+.dev-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dev-actions button {
+  padding: 3px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+}

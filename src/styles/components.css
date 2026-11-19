@@ -1,0 +1,1055 @@
+/* ---------- buttons ---------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--text-m);
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    background-color 0.12s,
+    border-color 0.12s,
+    color 0.12s;
+}
+
+.btn:hover {
+  border-color: var(--text-faint);
+}
+
+.btn-sm {
+  height: 28px;
+  padding: 0 9px;
+  font-size: var(--text-s);
+}
+
+.btn-icon {
+  width: 32px;
+  padding: 0;
+}
+
+.btn-sm.btn-icon {
+  width: 28px;
+}
+
+.btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+}
+
+.btn-danger {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.btn-danger:hover {
+  border-color: var(--danger);
+}
+
+/* In a confirmation the dangerous choice is spelled out loudly. */
+.dialog-foot .btn-danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.btn-ghost:hover {
+  border-color: transparent;
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn[aria-busy="true"] {
+  opacity: 0.85;
+  cursor: progress;
+}
+
+.link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ---------- form controls ---------- */
+
+input:not([type="checkbox"], [type="radio"]),
+select {
+  height: 32px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--input-bg);
+  color: var(--text);
+}
+
+select {
+  padding-right: 6px;
+}
+
+input::placeholder {
+  color: var(--text-faint);
+}
+
+input:not([type="checkbox"], [type="radio"]):focus,
+select:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.select-sm {
+  height: 28px;
+  font-size: var(--text-s);
+}
+
+.field {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-width: 0;
+}
+
+.field > label {
+  overflow: hidden;
+  font-size: var(--text-s);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.field > input,
+.field > select {
+  width: 100%;
+}
+
+.field-invalid input:not([type="checkbox"], [type="radio"]) {
+  border-color: var(--danger);
+}
+
+.field-hint,
+.field-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  font-size: var(--text-xs);
+}
+
+.field-hint {
+  color: var(--text-faint);
+}
+
+.field-error {
+  color: var(--danger);
+}
+
+.field-error svg {
+  margin-top: 2px;
+}
+
+.field-row {
+  display: flex;
+  gap: 12px;
+}
+
+.field-grow {
+  flex: 1;
+}
+
+.field-port {
+  width: 160px;
+}
+
+.input-with-button {
+  display: flex;
+  gap: 6px;
+}
+
+.input-with-button input {
+  flex: 1;
+}
+
+.inline-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--danger);
+  font-size: var(--text-s);
+}
+
+.inline-error svg {
+  margin-top: 3px;
+}
+
+/* ---------- banners and callouts ---------- */
+
+.banner {
+  --tone: var(--accent);
+  --tone-soft: var(--accent-soft);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--tone) 35%, transparent);
+  border-radius: var(--radius-l);
+  background: var(--tone-soft);
+}
+
+.banner-good {
+  --tone: var(--good);
+  --tone-soft: var(--good-soft);
+}
+.banner-warn {
+  --tone: var(--warn);
+  --tone-soft: var(--warn-soft);
+}
+.banner-danger {
+  --tone: var(--danger);
+  --tone-soft: var(--danger-soft);
+}
+
+.banner-icon {
+  margin-top: 1px;
+  color: var(--tone);
+}
+
+.banner-title {
+  display: block;
+  font-weight: 600;
+}
+
+.banner-text {
+  display: grid;
+  gap: 6px;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: var(--text-s);
+}
+
+.banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.callout {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--tone) 35%, transparent);
+  border-radius: var(--radius);
+  background: var(--tone-soft);
+  font-size: var(--text-s);
+}
+
+.callout-danger {
+  --tone: var(--danger);
+  --tone-soft: var(--danger-soft);
+}
+.callout-good {
+  --tone: var(--good);
+  --tone-soft: var(--good-soft);
+}
+
+.callout strong {
+  display: block;
+  color: var(--tone);
+}
+
+.callout strong + p {
+  margin-top: 3px;
+}
+
+/* ---------- chips ---------- */
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.chips-label {
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+  font-size: var(--text-s);
+}
+
+.chip > .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-kind {
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+}
+
+.chip-group svg {
+  color: var(--accent);
+}
+
+.chip-button {
+  color: var(--text);
+}
+
+.chip-button:hover {
+  border-color: var(--accent);
+}
+
+/* ---------- dialogs ---------- */
+
+.dialog {
+  width: min(520px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.dialog-sm {
+  width: min(420px, calc(100vw - 48px));
+}
+
+.dialog-lg {
+  width: min(660px, calc(100vw - 48px));
+}
+
+.dialog::backdrop {
+  background: var(--backdrop);
+}
+
+.dialog[open] {
+  animation: dialog-in 0.14s ease-out;
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+}
+
+.dialog-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 50px);
+}
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 18px 10px;
+}
+
+.dialog-head h2 {
+  flex: 1;
+  font-size: 16px;
+}
+
+.dialog-icon {
+  display: inline-flex;
+  color: var(--accent);
+}
+
+.dialog-tone-danger .dialog-icon {
+  color: var(--danger);
+}
+.dialog-tone-warn .dialog-icon {
+  color: var(--warn);
+}
+.dialog-tone-good .dialog-icon {
+  color: var(--good);
+}
+
+.dialog-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.dialog-close:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.dialog-body {
+  overflow-y: auto;
+  padding: 2px 18px 16px;
+}
+
+.dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.dialog-footer-start {
+  margin-right: auto;
+}
+
+.dialog-lead {
+  color: var(--text-muted);
+  font-size: var(--text-s);
+}
+
+.confirm-body {
+  display: grid;
+  gap: 8px;
+  color: var(--text-muted);
+}
+
+.confirm-list {
+  display: grid;
+  gap: 3px;
+  padding-left: 18px;
+  color: var(--text);
+}
+
+.confirm-detail {
+  color: var(--text-muted);
+}
+
+/* ---------- progress steps ---------- */
+
+.steps {
+  display: grid;
+  margin-top: 14px;
+  padding: 0;
+  list-style: none;
+}
+
+.step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  padding: 5px 0;
+}
+
+/* The line between steps; done segments are drawn solid. */
+.step::before {
+  content: "";
+  position: absolute;
+  top: 25px;
+  bottom: -4px;
+  left: 10px;
+  width: 2px;
+  background: var(--border);
+}
+
+.step:last-child::before {
+  display: none;
+}
+
+.step-done::before {
+  background: color-mix(in srgb, var(--good) 55%, transparent);
+}
+
+.step-glyph {
+  display: inline-flex;
+  justify-content: center;
+  padding-top: 1px;
+  color: var(--text-faint);
+}
+
+.step-done .step-glyph {
+  color: var(--good);
+}
+.step-active .step-glyph {
+  color: var(--accent);
+}
+.step-failed .step-glyph {
+  color: var(--danger);
+}
+
+.step-label {
+  font-weight: 500;
+}
+
+.step-pending .step-label {
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+.step-failed .step-label {
+  color: var(--danger);
+}
+
+.step-hint {
+  display: block;
+  margin-top: 1px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.elapsed {
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+}
+
+/* ---------- toasts ---------- */
+
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 340px;
+  pointer-events: none;
+}
+
+/* Keep clear of the save bar on the Routing page. */
+.shell:has(.savebar) ~ .toasts {
+  bottom: 76px;
+}
+
+.toast {
+  --tone: var(--accent);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 11px 10px 11px 12px;
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--tone);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  font-size: var(--text-s);
+  pointer-events: auto;
+  animation: toast-in 0.16s ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+.toast-success {
+  --tone: var(--good);
+}
+.toast-error {
+  --tone: var(--danger);
+}
+
+.toast-icon {
+  margin-top: 1px;
+  color: var(--tone);
+}
+
+.toast-body {
+  display: grid;
+  gap: 2px;
+}
+
+.toast-body .link-button {
+  justify-self: start;
+  margin-top: 4px;
+}
+
+.toast-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-faint);
+}
+
+.toast-close:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* ---------- readiness checklist ---------- */
+
+.checks {
+  padding: 0;
+  list-style: none;
+}
+
+.check {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 9px 0;
+  border-top: 1px solid var(--border);
+}
+
+.check:first-child {
+  border-top: 0;
+  padding-top: 2px;
+}
+
+.check-glyph {
+  margin-top: 1px;
+  color: var(--text-faint);
+}
+
+.check-ok .check-glyph {
+  color: var(--good);
+}
+.check-fail .check-glyph {
+  color: var(--danger);
+}
+.check-warn .check-glyph {
+  color: var(--warn);
+}
+
+.check-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+}
+
+.check-title {
+  font-weight: 500;
+}
+
+.check-pending .check-title,
+.check-skip .check-title {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.check-detail {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.check-fix {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: var(--text-s);
+}
+
+.check-fix-muted {
+  color: var(--text-faint);
+}
+
+.check-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-s);
+  color: var(--text-faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.check-action {
+  margin-top: -4px;
+}
+
+.checked-ago {
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+/* ---------- core facts ---------- */
+
+.facts-list {
+  display: grid;
+  font-size: var(--text-s);
+}
+
+.facts-list > div {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.facts-list > div:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.facts-list dt {
+  color: var(--text-muted);
+}
+
+.facts-list dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.facts-groups {
+  display: grid;
+  gap: 3px;
+  padding: 0;
+  list-style: none;
+}
+
+.facts-groups li {
+  display: grid;
+}
+
+.facts-group-path {
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+}
+
+/* ---------- status hero ---------- */
+
+.hero {
+  padding: 20px 22px 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.hero-top {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 14px;
+}
+
+.hero-icon {
+  padding: 7px;
+  border-radius: var(--radius-l);
+  background: var(--tone-soft);
+  color: var(--tone);
+  box-sizing: content-box;
+}
+
+.hero-text h1 {
+  font-size: var(--text-hero);
+}
+
+.hero-summary {
+  margin-top: 4px;
+  max-width: 62ch;
+  color: var(--text-muted);
+}
+
+.hero-fresh {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.hero-actions > .btn {
+  height: 36px;
+  padding: 0 16px;
+}
+
+.hero-running {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 6px 0 12px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  font-size: var(--text-s);
+}
+
+.hero-running .spin {
+  color: var(--accent);
+}
+
+.hero-note {
+  margin-top: 10px;
+  max-width: 72ch;
+  color: var(--text-muted);
+  font-size: var(--text-s);
+}
+
+.hero > .inline-error {
+  margin-top: 12px;
+}
+
+/* ---------- route strip: the two ways out of the PC ---------- */
+
+.lanes {
+  display: grid;
+  gap: 6px;
+  margin-top: 18px;
+  padding: 0;
+  list-style: none;
+}
+
+/* Name and state on top, the path below: the path needs the full width to stay readable. */
+.lane {
+  --lane: var(--idle);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 9px 12px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.lane-works,
+.lane-blocked {
+  --lane: var(--good);
+}
+.lane-down {
+  --lane: var(--danger);
+}
+.lane-partial {
+  --lane: var(--warn);
+}
+
+.lane-name {
+  font-size: var(--text-s);
+  font-weight: 600;
+}
+
+.lane-path {
+  display: flex;
+  grid-row: 2;
+  grid-column: 1 / -1;
+  align-items: center;
+  min-width: 0;
+}
+
+.lane-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.lane-wire {
+  position: relative;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 2px;
+  background: var(--lane);
+}
+
+.lane-down .lane-wire,
+.lane-unknown .lane-wire,
+.lane-open .lane-wire {
+  opacity: 0.55;
+}
+
+/* A cut wire is dashed and carries a stop sign, so it reads without colour too. */
+.lane-wire-cut {
+  background: repeating-linear-gradient(90deg, var(--lane) 0 5px, transparent 5px 9px);
+}
+
+.lane-cut {
+  padding: 0 2px;
+  background: var(--bg);
+  color: var(--lane);
+}
+
+.lane-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--lane);
+  font-size: var(--text-s);
+  font-weight: 600;
+}
+
+.lane-open .lane-state,
+.lane-unknown .lane-state {
+  color: var(--text-muted);
+}
+
+@media (min-width: 1120px) {
+  .lanes {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+}
+
+/* ---------- segmented choice ---------- */
+
+.segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.segmented legend {
+  margin-bottom: 8px;
+  padding: 0;
+  font-size: var(--text-s);
+  font-weight: 600;
+}
+
+.segment {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  padding: 10px 12px 11px 36px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.segment:hover {
+  border-color: var(--border-strong);
+}
+
+.segment input {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+}
+
+.segment:focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.segment input:focus-visible {
+  outline: none;
+}
+
+.segment-on,
+.segment-on:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.segment-title {
+  font-weight: 600;
+}
+
+.segment-text {
+  color: var(--text-muted);
+  font-size: var(--text-s);
+}
+
+/* ---------- empty states ---------- */
+
+.empty {
+  padding: 6px 0;
+  color: var(--text-muted);
+  font-size: var(--text-s);
+}
+
+.empty-state {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  padding: 22px;
+}
+
+.empty-state > svg {
+  color: var(--text-faint);
+}
+
+.empty-state h2 {
+  font-size: 16px;
+}
+
+.empty-state p {
+  max-width: 62ch;
+  color: var(--text-muted);
+  font-size: var(--text-s);
+}
+
+.empty-state .btn {
+  margin-top: 4px;
+}

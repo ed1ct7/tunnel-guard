@@ -1,0 +1,108 @@
+/* Design tokens. Dark is the default; light follows the Windows app theme via prefers-color-scheme. */
+:root {
+  color-scheme: dark;
+
+  --font: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+
+  --bg: #171b21;
+  --bg-sidebar: #13171c;
+  --surface: #1e232a;
+  --surface-2: #272d35;
+  --surface-raised: #242a32;
+  --input-bg: #14181d;
+  --border: #2b323b;
+  --border-strong: #3b444f;
+
+  --text: #e3e7ec;
+  --text-muted: #a3adb8;
+  --text-faint: #7b8591;
+
+  --accent: #5e9fe0;
+  --accent-hover: #79b1ea;
+  --accent-text: #0d1520;
+  --accent-soft: rgb(94 159 224 / 0.14);
+
+  --good: #52c48c;
+  --good-soft: rgb(82 196 140 / 0.12);
+  --warn: #e2b24a;
+  --warn-soft: rgb(226 178 74 / 0.13);
+  --danger: #f07a6e;
+  --danger-soft: rgb(240 122 110 / 0.13);
+  --idle: #8d97a3;
+  --idle-soft: rgb(141 151 163 / 0.12);
+
+  --focus: #8cc2ff;
+  --backdrop: rgb(6 9 13 / 0.62);
+  --shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+
+  --radius-s: 4px;
+  --radius: 6px;
+  --radius-l: 10px;
+
+  --text-xs: 12px;
+  --text-s: 13px;
+  --text-m: 14px;
+  --text-l: 15px;
+  --text-xl: 20px;
+  --text-hero: 22px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+
+    --bg: #f2f4f7;
+    --bg-sidebar: #e8ecf0;
+    --surface: #ffffff;
+    --surface-2: #edf0f3;
+    --surface-raised: #ffffff;
+    --input-bg: #ffffff;
+    --border: #dce1e7;
+    --border-strong: #c2cad3;
+
+    --text: #1b222a;
+    --text-muted: #55606c;
+    --text-faint: #77828e;
+
+    --accent: #2d6cb0;
+    --accent-hover: #245a94;
+    --accent-text: #ffffff;
+    --accent-soft: rgb(45 108 176 / 0.1);
+
+    --good: #1b7f4e;
+    --good-soft: rgb(27 127 78 / 0.09);
+    --warn: #935f00;
+    --warn-soft: rgb(196 132 0 / 0.11);
+    --danger: #bf3a30;
+    --danger-soft: rgb(191 58 48 / 0.08);
+    --idle: #67717c;
+    --idle-soft: rgb(103 113 124 / 0.09);
+
+    --focus: #2d6cb0;
+    --backdrop: rgb(24 32 42 / 0.4);
+    --shadow: 0 10px 28px rgb(20 30 42 / 0.16);
+  }
+}
+
+/* Tone carriers: components read --tone / --tone-soft. */
+.tone-good {
+  --tone: var(--good);
+  --tone-soft: var(--good-soft);
+}
+.tone-warn {
+  --tone: var(--warn);
+  --tone-soft: var(--warn-soft);
+}
+.tone-danger {
+  --tone: var(--danger);
+  --tone-soft: var(--danger-soft);
+}
+.tone-idle {
+  --tone: var(--idle);
+  --tone-soft: var(--idle-soft);
+}
+.tone-busy {
+  --tone: var(--accent);
+  --tone-soft: var(--accent-soft);
+}
