@@ -1,4 +1,4 @@
-import type { GuardState, ProtectionAction, Status } from "../api/types";
+import type { GuardState, ProtectionAction, Status, StatusWarning } from "../api/types";
 
 export type Tone = "good" | "warn" | "danger" | "idle";
 
@@ -17,6 +17,48 @@ export type StatusView = {
   direct: Lane;
 };
 
+/** Most serious first: the first one present is what the hero shows. */
+const warningViews: [StatusWarning, Omit<StatusView, "tunnel">][] = [
+  [
+    "core_routing",
+    {
+      tone: "warn",
+      title: "Mihomo вышел из режима Rule или из TUN",
+      summary:
+        "Защита проверялась в режиме Rule через TUN. Сейчас Mihomo работает иначе, а его собственные соединения Windows пропускает — в том числе DIRECT мимо VPN. Верни Rule и Enable TUN в v2rayN.",
+      pill: "Проверь Mihomo",
+      direct: "partial",
+    },
+  ],
+  [
+    "foreign_hard_permit",
+    {
+      tone: "warn",
+      title: "Другая программа может обойти блокировку",
+      summary:
+        "В Windows есть фильтр стороннего VPN-клиента, антивируса или файрвола, который жёстко разрешает трафик раньше Tunnel Guard. Через него приложения могут выйти напрямую. Проверь установленные сетевые программы.",
+      pill: "Есть обход",
+      direct: "partial",
+    },
+  ],
+  [
+    "outdated_policy",
+    {
+      tone: "warn",
+      title: "Защита включена, но фильтры устарели",
+      summary:
+        "Действует прежний набор фильтров: он не перекрывает трафик WSL, Hyper-V и раздачи интернета и уступает фильтрам с большим весом. Нажми «Обновить фильтры» — замена пройдёт без перерыва в защите.",
+      pill: "Обновить фильтры",
+      direct: "blocked",
+    },
+  ],
+];
+
+/** Whether the active filters can be replaced by the current set in place. */
+export function canUpgrade(status: Status | null): boolean {
+  return status?.state === "On" && Boolean(status.warnings?.includes("outdated_policy"));
+}
+
 export function presentStatus(status: Status | null): StatusView {
   if (!status) {
     return {
@@ -30,7 +72,11 @@ export function presentStatus(status: Status | null): StatusView {
   }
   const tunnel: Lane = status.adapter_up ? "works" : "down";
   switch (status.state) {
-    case "On":
+    case "On": {
+      const warning = status.adapter_up
+        ? warningViews.find(([id]) => status.warnings?.includes(id))
+        : undefined;
+      if (warning) return { ...warning[1], tunnel };
       return status.adapter_up
         ? {
             tone: "good",
@@ -50,6 +96,7 @@ export function presentStatus(status: Status | null): StatusView {
             tunnel,
             direct: "blocked",
           };
+    }
     case "Off":
       return status.adapter_up
         ? {

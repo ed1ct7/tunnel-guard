@@ -6,12 +6,16 @@ export type GuardState =
 
 export type ProtectionBackend = "group_policy" | "wfp";
 
+/** Why an active guard may not hold as expected; absent when there is none. */
+export type StatusWarning = "core_routing" | "foreign_hard_permit" | "outdated_policy";
+
 export type Status = {
   state: GuardState;
   adapter_up: boolean;
   active_backend?: ProtectionBackend;
   /** Unix time in ms of the read that produced this status. */
   checked_at: number;
+  warnings?: StatusWarning[];
 };
 
 export type Settings = {

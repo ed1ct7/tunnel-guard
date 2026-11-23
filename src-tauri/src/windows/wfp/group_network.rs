@@ -8,7 +8,10 @@ const LAYERS: [GUID; 4] = [
     FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4,
     FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6,
 ];
-const WEIGHT: u16 = 0xe100;
+/// Top weight, like the kill switch, so no third-party sublayer outranks the
+/// block. Blocks created by earlier versions keep their old weight.
+const WEIGHT: u16 = u16::MAX;
+const LEGACY_WEIGHT: u16 = 0xe100;
 
 fn group_owner(id: &str) -> Result<[u8; 32]> {
     let storage = settings::storage()?;
@@ -75,7 +78,9 @@ fn state(engine: &Engine, owner: &[u8; 32]) -> Result<NetworkState> {
     else {
         return Ok(NetworkState::Partial);
     };
-    if layer.flags & FWPM_SUBLAYER_FLAG_PERSISTENT == 0 || layer.weight != WEIGHT {
+    if layer.flags & FWPM_SUBLAYER_FLAG_PERSISTENT == 0
+        || (layer.weight != WEIGHT && layer.weight != LEGACY_WEIGHT)
+    {
         return Ok(NetworkState::Partial);
     }
     for (app, expected_layer, filter) in filters(owner, paths.len()) {

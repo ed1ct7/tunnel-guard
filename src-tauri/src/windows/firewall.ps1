@@ -1,11 +1,14 @@
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Status','Rules','Targets','Diagnose','Preflight','Enable','Disable','CleanLegacy','WfpEnable','WfpDisable')]
+    [ValidateSet('Status','Rules','Targets','Diagnose','Preflight','Enable','Disable','CleanLegacy','WfpEnable','WfpUpgrade','WfpDisable')]
     [string] $Action,
     [string] $SettingsPath,
     [string] $ProgressPath
 )
 
+# The script runs elevated: load modules only from the Windows directory,
+# never from a module path the unelevated user can write to.
+$env:PSModulePath = Join-Path $PSHOME 'Modules'
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $store = 'localhost'
@@ -16,7 +19,7 @@ $legacy = @('Server4KillSwitch-Tunnel','Server4KillSwitch-Mihomo','Server4KillSw
 $backup = Join-Path (Split-Path -Parent $SettingsPath) 'original-policy.xml'
 $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
 
-$progressAction = @{Enable='enable';Disable='disable';CleanLegacy='clean_legacy';WfpEnable='enable';WfpDisable='disable'}[$Action]
+$progressAction = @{Enable='enable';Disable='disable';CleanLegacy='clean_legacy';WfpEnable='enable';WfpUpgrade='enable';WfpDisable='disable'}[$Action]
 
 # Reports a stage to the panel. Best effort: any failure is swallowed, writes
 # nothing to the pipeline and touches no script variable, so it can never
@@ -196,6 +199,7 @@ function Assert-TunReady($connection, [bool] $verifyCore) {
     if ($runtime.mode -ne 'rule' -or -not $runtime.tun.enable -or $runtime.tun.device -ne $tunnel) {
         throw 'The selected Mihomo TUN must be up and in Rule mode.'
     }
+    [int] $controller.OwningProcess
 }
 
 try {
@@ -251,7 +255,7 @@ try {
         $stage = 'SETTINGS'
         $connection = Read-ConnectionSettings
         $stage = 'TUN'
-        Assert-TunReady $connection $false
+        $null = Assert-TunReady $connection $false
         exit 0
     }
     $state = Get-GuardState
@@ -278,7 +282,9 @@ try {
         exit 0
     }
 
-    $wfp = $Action -eq 'WfpEnable'
+    $wfp = $Action -in @('WfpEnable','WfpUpgrade')
+    # Replaces an active older filter set; the direct path is already blocked.
+    $upgrade = $Action -eq 'WfpUpgrade'
     $stage = 'POLICY'
     if ($Action -eq 'CleanLegacy' -or ($state -eq 'LegacyInactive' -and -not $wfp)) {
         if ($state -ne 'LegacyInactive') { throw 'Legacy cleanup requires the old protection to be off.' }
@@ -308,10 +314,15 @@ try {
     $connection = Read-ConnectionSettings
     $stage = 'TUN'
     Set-GuardProgress 'tun'
-    Assert-TunReady $connection $true
+    $corePid = Assert-TunReady $connection $true
     $tunnel = $connection.tunnel
     $core = $connection.core
     $port = $connection.port
+    # The WFP worker uses exactly what was checked here, not a fresh read of
+    # the user-writable settings file.
+    $env:TUNNEL_GUARD_WFP_CORE = $core
+    $env:TUNNEL_GUARD_WFP_ADAPTER = $tunnel
+    $env:TUNNEL_GUARD_WFP_CORE_PID = [string] $corePid
     $stage = 'VERIFY'
     $probe = '9.9.9.9'
     $normalRoute = Find-NetRoute -RemoteIPAddress $probe | Where-Object DestinationPrefix | Select-Object -Last 1
@@ -343,7 +354,7 @@ try {
             }
             $hostRoutes += New-NetRoute -DestinationPrefix $route.prefix -InterfaceIndex $route.gateway.InterfaceIndex `
                 -NextHop $route.gateway.NextHop -PolicyStore ActiveStore
-            if (-not (Test-Tcp $route.address)) {
+            if (-not $upgrade -and -not (Test-Tcp $route.address)) {
                 throw 'A direct verification endpoint is unavailable before applying protection.'
             }
         }
@@ -351,7 +362,7 @@ try {
             $stage = 'WFP'
             Set-GuardProgress 'apply'
             $started = $true
-            Invoke-WfpWorker 'Apply'
+            Invoke-WfpWorker $(if ($upgrade) { 'Upgrade' } else { 'Apply' })
         } else {
             $stage = 'POLICY'
             Set-GuardProgress 'backup'
@@ -386,7 +397,14 @@ try {
             $failedStage = $stage
             $stage = 'RESTORE'
             Set-GuardProgress 'restore'
-            if ($wfp) { Invoke-WfpWorker 'Remove' } else { Restore-Guard }
+            if ($upgrade) {
+                # Put the previously verified set back instead of opening traffic.
+                Invoke-WfpWorker 'Rollback'
+            } elseif ($wfp) {
+                Invoke-WfpWorker 'Remove'
+            } else {
+                Restore-Guard
+            }
             $stage = $failedStage
         }
         throw
@@ -395,7 +413,7 @@ try {
     }
     Write-Output 'Verified: VPN HTTPS succeeds and direct verification routes are blocked.'
 } catch {
-    if ($Action -in @('Preflight','Enable','Disable','CleanLegacy','WfpEnable','WfpDisable')) {
+    if ($Action -in @('Preflight','Enable','Disable','CleanLegacy','WfpEnable','WfpUpgrade','WfpDisable')) {
         [Console]::Error.WriteLine("TG_STAGE:$stage")
     }
     [Console]::Error.WriteLine($_.Exception.Message)

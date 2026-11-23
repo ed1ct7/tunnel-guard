@@ -1,4 +1,4 @@
-import { ExternalLink, Power, PowerOff, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
+import { ExternalLink, Power, PowerOff, RefreshCw, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
 import type { Diagnosis, ProtectionBackend, Status } from "../api/types";
 import { protectionBackendLabels } from "../domain/settings";
 import { blockingProblems } from "../domain/checks";
@@ -50,6 +50,8 @@ type StatusHeroProps = {
   onRefresh: () => void;
   primary: PrimaryAction;
   onPrimary: () => void;
+  /** Present when the active filters are outdated and can be replaced in place. */
+  onUpgrade: (() => void) | null;
   clientConfigured: boolean;
   onOpenClient: () => void;
   openingClient: boolean;
@@ -127,6 +129,11 @@ export function StatusHero(props: StatusHeroProps) {
             onClick={props.onPrimary}
           >
             {primary.label}
+          </Button>
+        )}
+        {props.onUpgrade && !running && (
+          <Button variant="primary" icon={ShieldCheck} onClick={props.onUpgrade}>
+            Обновить фильтры
           </Button>
         )}
         <Button

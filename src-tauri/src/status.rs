@@ -16,6 +16,21 @@ pub(crate) enum GuardState {
     Unknown,
 }
 
+/// Reasons why an active guard may not hold as expected. Serialized names are
+/// part of the CLI JSON and panel contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StatusWarning {
+    /// Mihomo left Rule mode or its TUN, so traffic may not use the tunnel.
+    CoreRouting,
+    /// Another program has a WFP permit that can override the block.
+    ForeignHardPermit,
+    /// The filters predate the current set and can be updated in place.
+    OutdatedPolicy,
+    #[serde(other)]
+    Unknown,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Status {
     pub state: GuardState,
@@ -25,12 +40,14 @@ pub(crate) struct Status {
     /// Unix ms of the read; set in Rust, absent in the script output.
     #[serde(default)]
     pub checked_at: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<StatusWarning>,
 }
 
 impl Status {
     /// What the tray shows. `checked_at` is deliberately ignored.
-    pub(crate) fn view(&self) -> (GuardState, bool) {
-        (self.state, self.adapter_up)
+    pub(crate) fn view(&self) -> (GuardState, bool, bool) {
+        (self.state, self.adapter_up, !self.warnings.is_empty())
     }
 
     #[cfg_attr(not(windows), allow(dead_code))]
@@ -40,8 +57,23 @@ impl Status {
             adapter_up: false,
             active_backend: None,
             checked_at: now_ms(),
+            warnings: Vec::new(),
         }
     }
+}
+
+/// Whether Mihomo's live `/configs` still routes through the guarded TUN in
+/// Rule mode — the state the guard was verified in.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn core_routes_tunnel(configs: &serde_json::Value, adapter: &str) -> bool {
+    let tun = &configs["tun"];
+    configs["mode"]
+        .as_str()
+        .is_some_and(|mode| mode.eq_ignore_ascii_case("rule"))
+        && tun["enable"].as_bool() == Some(true)
+        && tun["device"]
+            .as_str()
+            .is_some_and(|device| device.to_lowercase() == adapter.to_lowercase())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +109,7 @@ pub(crate) fn unsupported_status() -> Status {
         adapter_up: false,
         active_backend: None,
         checked_at: now_ms(),
+        warnings: Vec::new(),
     }
 }
 
@@ -160,6 +193,7 @@ mod tests {
                 adapter_up: true,
                 active_backend: None,
                 checked_at: 0,
+                warnings: Vec::new(),
             }
         );
     }
@@ -171,6 +205,7 @@ mod tests {
             adapter_up: false,
             active_backend: None,
             checked_at: 42,
+            warnings: Vec::new(),
         })
         .unwrap();
         assert_eq!(
@@ -186,6 +221,7 @@ mod tests {
             adapter_up: true,
             active_backend: None,
             checked_at: 1,
+            warnings: Vec::new(),
         };
         let b = Status {
             checked_at: 2,
@@ -203,6 +239,54 @@ mod tests {
             serde_json::to_string(&Action::Enable).unwrap(),
             "\"enable\""
         );
+    }
+
+    #[test]
+    fn warnings_serialize_in_snake_case_and_tolerate_new_names() {
+        let value = serde_json::to_value(Status {
+            state: GuardState::On,
+            adapter_up: true,
+            active_backend: None,
+            checked_at: 1,
+            warnings: vec![StatusWarning::CoreRouting, StatusWarning::OutdatedPolicy],
+        })
+        .unwrap();
+        assert_eq!(
+            value["warnings"],
+            serde_json::json!(["core_routing", "outdated_policy"])
+        );
+        let warning: StatusWarning = serde_json::from_str("\"something_new\"").unwrap();
+        assert_eq!(warning, StatusWarning::Unknown);
+    }
+
+    #[test]
+    fn core_routing_requires_rule_mode_and_the_guarded_tun() {
+        let configs = |mode: &str, enable: bool, device: &str| serde_json::json!({"mode": mode, "tun": {"enable": enable, "device": device}});
+        assert!(core_routes_tunnel(
+            &configs("rule", true, "Mihomo"),
+            "mihomo"
+        ));
+        assert!(core_routes_tunnel(
+            &configs("Rule", true, "Mihomo"),
+            "Mihomo"
+        ));
+        assert!(!core_routes_tunnel(
+            &configs("global", true, "Mihomo"),
+            "Mihomo"
+        ));
+        assert!(!core_routes_tunnel(
+            &configs("direct", true, "Mihomo"),
+            "Mihomo"
+        ));
+        assert!(!core_routes_tunnel(
+            &configs("rule", false, "Mihomo"),
+            "Mihomo"
+        ));
+        assert!(!core_routes_tunnel(
+            &configs("rule", true, "Other"),
+            "Mihomo"
+        ));
+        assert!(!core_routes_tunnel(&serde_json::json!({}), "Mihomo"));
     }
 
     #[test]

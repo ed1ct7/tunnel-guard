@@ -25,7 +25,7 @@ pub(crate) const HIDDEN_INTERVAL: Duration = Duration::from_secs(20);
 
 struct Schedule {
     last_read: Option<Instant>,
-    last_view: Option<(GuardState, bool)>,
+    last_view: Option<(GuardState, bool, bool)>,
     refresh: bool,
 }
 

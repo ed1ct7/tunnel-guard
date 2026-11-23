@@ -3,7 +3,9 @@ use crate::{
     diagnose::diagnose,
     rules::{config_snapshot, edit_rules, load_rules, upsert_rule, ConfigSnapshot, DIRECT_DEFAULT},
     settings::{edit_settings, load_settings, open_client, ProtectionBackend},
-    status::{active_rules, apply_protection_headless, read_status, read_vpn_targets, Action},
+    status::{
+        active_rules, apply_protection_headless, read_status, read_vpn_targets, Action, GuardState,
+    },
     Result,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -187,7 +189,13 @@ enum ProtectionCommand {
         confirm: bool,
     },
     CleanLegacy,
+    /// Exit code 3 while Tunnel Guard's filters or policy are in force (used by
+    /// the uninstaller), 0 when nothing of it blocks traffic.
+    Active,
 }
+
+/// Exit code of "protection active" when the guard is in force.
+const PROTECTION_ACTIVE: i32 = 3;
 
 fn json_file<T: serde::de::DeserializeOwned>(path: PathBuf) -> Result<T> {
     let bytes = fs::read(path).map_err(|error| error.to_string())?;
@@ -284,6 +292,11 @@ fn execute(command: Command) -> Result<Value> {
                     return Err("Требуется --confirm.".into())
                 }
                 ProtectionCommand::CleanLegacy => Action::CleanLegacy,
+                ProtectionCommand::Active => {
+                    let status = read_status()?;
+                    let active = matches!(status.state, GuardState::On | GuardState::Partial);
+                    return Ok(json!({ "status": status, "protection_active": active }));
+                }
             };
             Ok(json!({ "status": apply_protection_headless(action)? }))
         }
@@ -353,7 +366,9 @@ pub fn run() -> i32 {
             let complete = data.get("partial").and_then(Value::as_bool) != Some(true);
             data["ok"] = Value::Bool(complete);
             println!("{data}");
-            if complete {
+            if data.get("protection_active").and_then(Value::as_bool) == Some(true) {
+                PROTECTION_ACTIVE
+            } else if complete {
                 0
             } else {
                 2

@@ -5,7 +5,7 @@ use crate::{
     core_rules::load_generated,
     progress::{parse_progress, Progress, ProgressStage, PROGRESS_FILE},
     settings::{client_path, load_settings, lock_config, storage, ProtectionBackend},
-    status::{now_ms, Action, GuardState, Status},
+    status::{core_routes_tunnel, now_ms, Action, GuardState, Status, StatusWarning},
     Result,
 };
 use std::{
@@ -51,13 +51,44 @@ fn powershell(action: &str) -> Result<Output> {
     run_script(action, None, &[])
 }
 
+/// Variables that make PowerShell or .NET load code from elsewhere. The
+/// script runs elevated, so it must not inherit them from the user's session.
+fn loads_foreign_code(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    ["COR_", "CORECLR_", "COMPLUS_", "DOTNET_"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+        || matches!(
+            name.as_str(),
+            "PSEXECUTIONPOLICYPREFERENCE" | "__PSLOCKDOWNPOLICY" | "PSMODULEPATH"
+        )
+}
+
 fn run_script(action: &str, progress: Option<&Path>, extra: &[(&str, &OsStr)]) -> Result<Output> {
-    let executable = PathBuf::from(env::var_os("SystemRoot").ok_or("SystemRoot не найден.")?)
-        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let system_root = PathBuf::from(env::var_os("SystemRoot").ok_or("SystemRoot не найден.")?);
+    let system = system_root.join("System32");
+    let shell = system.join("WindowsPowerShell").join("v1.0");
+    let executable = shell.join("powershell.exe");
     let command = format!("& {{\n{SCRIPT}\n}} -Action $env:TUNNEL_GUARD_ACTION -SettingsPath $env:TUNNEL_GUARD_SETTINGS -ProgressPath $env:TUNNEL_GUARD_PROGRESS");
     let mut process = Command::new(executable);
+    for (name, _) in env::vars_os() {
+        if name.to_str().is_some_and(loads_foreign_code) {
+            process.env_remove(name);
+        }
+    }
+    let path = env::join_paths([
+        system.clone(),
+        system_root.clone(),
+        system.join("Wbem"),
+        shell.clone(),
+    ])
+    .map_err(|error| error.to_string())?;
     process
         .args(["-NoProfile", "-NonInteractive", "-Command", &command])
+        // Only the built-in modules: a user-writable module path would let an
+        // unelevated process plant NetTCPIP or NetSecurity for the worker.
+        .env("PSModulePath", shell.join("Modules"))
+        .env("PATH", path)
         .env("TUNNEL_GUARD_ACTION", action)
         .env("TUNNEL_GUARD_SETTINGS", storage()?.join("settings.json"));
     match progress {
@@ -70,8 +101,11 @@ fn run_script(action: &str, progress: Option<&Path>, extra: &[(&str, &OsStr)]) -
     process
         .env_remove("TUNNEL_GUARD_CONTROLLER_PORT")
         .env_remove("TUNNEL_GUARD_CONTROLLER_SECRET")
-        .env_remove("TUNNEL_GUARD_WFP_WORKER");
-    if matches!(action, "WfpEnable" | "WfpDisable") {
+        .env_remove("TUNNEL_GUARD_WFP_WORKER")
+        .env_remove(wfp::CORE_ENV)
+        .env_remove(wfp::ADAPTER_ENV)
+        .env_remove(wfp::CORE_PID_ENV);
+    if matches!(action, "WfpEnable" | "WfpUpgrade" | "WfpDisable") {
         process.env(
             "TUNNEL_GUARD_WFP_WORKER",
             env::current_exe().map_err(|error| error.to_string())?,
@@ -79,7 +113,7 @@ fn run_script(action: &str, progress: Option<&Path>, extra: &[(&str, &OsStr)]) -
     }
     if matches!(
         action,
-        "Rules" | "Targets" | "Preflight" | "Enable" | "WfpEnable"
+        "Rules" | "Targets" | "Preflight" | "Enable" | "WfpEnable" | "WfpUpgrade"
     ) {
         if let Some((port, secret)) = configured_controller() {
             process.env("TUNNEL_GUARD_CONTROLLER_PORT", port.to_string());
@@ -110,25 +144,46 @@ fn group_policy_status() -> Result<Status> {
         .map_err(|_| "Не удалось прочитать фактический статус Windows.".into())
 }
 
+/// Whether the live Mihomo has left the routing the guard was verified with.
+/// An unreachable controller is not reported: the adapter state covers it.
+fn core_routing_changed(adapter: &str) -> bool {
+    let Some((port, secret)) = configured_controller() else {
+        return false;
+    };
+    crate::http::get_json(port, "/configs", secret.as_deref())
+        .is_ok_and(|configs| !core_routes_tunnel(&configs, adapter))
+}
+
 pub fn status() -> Result<Status> {
     let mut status = group_policy_status()?;
     let settings = load_settings()?;
-    let (state, tunnel_matches) =
-        wfp::status(status.adapter_up.then_some(settings.adapter.as_str()))?;
-    match (state, status.state) {
+    let wfp = wfp::status(status.adapter_up.then_some(settings.adapter.as_str()))?;
+    match (wfp.state, status.state) {
         (GuardState::Off, GuardState::On | GuardState::Partial | GuardState::LegacyActive) => {
             status.active_backend = Some(ProtectionBackend::GroupPolicy);
         }
         (GuardState::Off, _) => {}
-        (wfp, GuardState::Off | GuardState::LegacyInactive) => {
-            status.state = wfp;
+        (state, GuardState::Off | GuardState::LegacyInactive) => {
+            status.state = state;
             status.active_backend = Some(ProtectionBackend::Wfp);
-            status.adapter_up &= tunnel_matches;
+            status.adapter_up &= wfp.tunnel_matches;
+            if state == GuardState::On && wfp.foreign_hard_permit {
+                status.warnings.push(StatusWarning::ForeignHardPermit);
+            }
+            if state == GuardState::On && wfp.outdated {
+                status.warnings.push(StatusWarning::OutdatedPolicy);
+            }
         }
         _ => {
             // Concurrent policies may override one another. Require recovery.
             status.state = GuardState::Partial;
         }
+    }
+    if status.state == GuardState::On
+        && status.adapter_up
+        && core_routing_changed(&settings.adapter)
+    {
+        status.warnings.insert(0, StatusWarning::CoreRouting);
     }
     Ok(status)
 }
@@ -289,16 +344,16 @@ fn run_worker(args: &[String], progress: Option<&Path>) -> i32 {
     let Some(_policy_lock) = PolicyLock::acquire() else {
         return 28;
     };
-    let Ok((wfp, _)) = wfp::status(None) else {
+    let Ok(wfp) = wfp::status(None) else {
         return 31;
     };
-    let action = match (action.as_str(), wfp) {
-        ("Enable", GuardState::On) => {
-            return match group_policy_status().map(|status| status.state) {
-                Ok(GuardState::Off | GuardState::LegacyInactive) => 0,
-                _ => 26,
-            };
-        }
+    let action = match (action.as_str(), wfp.state) {
+        ("Enable", GuardState::On) => match group_policy_status().map(|status| status.state) {
+            // Enabling an outdated set replaces it in place, without a gap.
+            Ok(GuardState::Off | GuardState::LegacyInactive) if wfp.outdated => "WfpUpgrade",
+            Ok(GuardState::Off | GuardState::LegacyInactive) => return 0,
+            _ => return 26,
+        },
         ("Enable" | "CleanLegacy", GuardState::Partial | GuardState::On) => return 26,
         ("Disable", GuardState::Partial | GuardState::On) => "WfpDisable",
         ("Enable", _) => match load_settings() {

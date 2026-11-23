@@ -15,6 +15,9 @@ const ICON_OFF: &[u8] = include_bytes!("../icons/off.png");
 
 fn tray_view(status: &Status) -> (&'static [u8], &'static str) {
     match (status.state, status.adapter_up) {
+        (GuardState::On, true) if !status.warnings.is_empty() => {
+            (ICON_WAITING, "Защита включена, есть предупреждение")
+        }
         (GuardState::On, true) => (ICON_ON, "Защита включена"),
         (GuardState::On, false) => (ICON_WAITING, "Туннель отключён"),
         (GuardState::Partial | GuardState::LegacyActive, _) => (ICON_WAITING, "Проверь правила"),
@@ -71,6 +74,7 @@ mod tests {
             adapter_up,
             active_backend: None,
             checked_at: 0,
+            warnings: Vec::new(),
         })
     }
 
@@ -87,6 +91,21 @@ mod tests {
         );
         assert_eq!(view(GuardState::Unknown, false).1, "Статус недоступен");
         assert_eq!(view(GuardState::Unsupported, false).1, "Статус недоступен");
+    }
+
+    #[test]
+    fn warnings_turn_the_icon_amber() {
+        let status = Status {
+            state: GuardState::On,
+            adapter_up: true,
+            active_backend: None,
+            checked_at: 0,
+            warnings: vec![crate::status::StatusWarning::CoreRouting],
+        };
+        assert_eq!(
+            tray_view(&status),
+            (ICON_WAITING, "Защита включена, есть предупреждение")
+        );
     }
 
     #[test]

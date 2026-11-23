@@ -3,7 +3,7 @@ import { Checklist } from "../components/Checklist";
 import { CoreFacts } from "../components/CoreFacts";
 import { StatusHero } from "../components/StatusHero";
 import type { CheckFixLink } from "../domain/checks";
-import { primaryAction } from "../domain/status";
+import { canUpgrade, primaryAction } from "../domain/status";
 
 export function OverviewPage() {
   const app = useApp();
@@ -27,6 +27,7 @@ export function OverviewPage() {
         onRefresh={() => void app.refreshAll()}
         primary={primary}
         onPrimary={() => void app.requestProtection(primary.action)}
+        onUpgrade={canUpgrade(status) ? () => void app.requestProtection("enable") : null}
         clientConfigured={!config.loaded || Boolean(config.configured.client_path)}
         onOpenClient={() => void app.openClient()}
         openingClient={app.openingClient}
