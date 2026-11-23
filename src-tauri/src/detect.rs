@@ -264,6 +264,7 @@ pub(crate) fn detect_from(
             client_path: chosen.to_string_lossy().into_owned(),
             adapter,
             proxy_port,
+            ..Settings::default()
         }),
         candidates: found[1..]
             .iter()
@@ -418,6 +419,7 @@ mod tests {
                 client_path: running.to_string_lossy().into_owned(),
                 adapter: "MihomoTest".into(),
                 proxy_port: 18761,
+                ..Settings::default()
             })
         );
         assert_eq!(detection.note, None);

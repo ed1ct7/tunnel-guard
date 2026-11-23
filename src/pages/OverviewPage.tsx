@@ -22,6 +22,7 @@ export function OverviewPage() {
         statusError={app.statusError}
         view={app.view}
         adapter={config.configured.adapter}
+        selectedBackend={config.loaded ? config.configured.protection_backend : null}
         refreshing={app.refreshingStatus || diagnosis.loading}
         onRefresh={() => void app.refreshAll()}
         primary={primary}

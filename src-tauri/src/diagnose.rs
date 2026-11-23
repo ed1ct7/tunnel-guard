@@ -509,6 +509,7 @@ mod tests {
             client_path: r"C:\v2rayN\v2rayN.exe".into(),
             adapter: "MihomoTest".into(),
             proxy_port: 18761,
+            ..Settings::default()
         }
     }
 
@@ -890,6 +891,7 @@ mod tests {
             client_path: root.join("v2rayN.exe").to_string_lossy().into_owned(),
             adapter: "MihomoTest".into(),
             proxy_port: 18761,
+            ..Settings::default()
         };
         let input = gather(&settings, |adapter, proxy, controller| {
             assert_eq!(adapter, Some("MihomoTest"));
@@ -931,6 +933,7 @@ mod tests {
             client_path: String::new(),
             adapter: "MihomoTest".into(),
             proxy_port: free - 6,
+            ..Settings::default()
         };
         let input = gather(&settings, |_, _, controller| {
             assert_eq!(controller, Some(free));

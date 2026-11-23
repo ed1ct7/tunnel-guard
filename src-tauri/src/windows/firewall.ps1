@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Status','Rules','Targets','Diagnose','Preflight','Enable','Disable','CleanLegacy')]
+    [ValidateSet('Status','Rules','Targets','Diagnose','Preflight','Enable','Disable','CleanLegacy','WfpEnable','WfpDisable')]
     [string] $Action,
     [string] $SettingsPath,
     [string] $ProgressPath
@@ -16,7 +16,7 @@ $legacy = @('Server4KillSwitch-Tunnel','Server4KillSwitch-Mihomo','Server4KillSw
 $backup = Join-Path (Split-Path -Parent $SettingsPath) 'original-policy.xml'
 $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
 
-$progressAction = @{Enable='enable';Disable='disable';CleanLegacy='clean_legacy'}[$Action]
+$progressAction = @{Enable='enable';Disable='disable';CleanLegacy='clean_legacy';WfpEnable='enable';WfpDisable='disable'}[$Action]
 
 # Reports a stage to the panel. Best effort: any failure is swallowed, writes
 # nothing to the pipeline and touches no script variable, so it can never
@@ -84,6 +84,20 @@ function Restore-Guard {
     Remove-Item -LiteralPath $backup
 }
 
+function Invoke-WfpWorker([string] $Operation) {
+    $worker = Start-Process -FilePath $env:TUNNEL_GUARD_WFP_WORKER -ArgumentList @('--wfp-worker',$Operation) `
+        -WindowStyle Hidden -Wait -PassThru
+    if ($worker.ExitCode -ne 0) { throw "Tunnel Guard WFP operation $Operation failed." }
+}
+
+function Find-PhysicalGateway([string] $Family, [string] $Tunnel) {
+    $default, $unspecified = if ($Family -eq 'IPv4') { '0.0.0.0/0','0.0.0.0' } else { '::/0','::' }
+    Get-NetRoute -AddressFamily $Family -DestinationPrefix $default -ErrorAction SilentlyContinue |
+        Where-Object { $_.InterfaceAlias -ne $Tunnel -and $_.NextHop -ne $unspecified } |
+        Sort-Object { $_.RouteMetric + (Get-NetIPInterface -InterfaceIndex $_.InterfaceIndex -AddressFamily $Family).InterfaceMetric } |
+        Select-Object -First 1
+}
+
 function Test-Tcp([string] $Address) {
     $client = [Net.Sockets.TcpClient]::new()
     try {
@@ -97,13 +111,27 @@ function Test-Tcp([string] $Address) {
     }
 }
 
-function Get-ProbeIP([string] $Proxy) {
+function Get-ProbeIP([string] $Url, [string] $Proxy) {
     $options = if ($Proxy) { @('--noproxy','invalid.invalid','--proxy',$Proxy) } else { @('--noproxy','*') }
-    $value = & $curl @options -4 --connect-timeout 4 --max-time 8 -fsS 'https://api.ipify.org'
+    $value = & $curl @options -4 --connect-timeout 4 --max-time 8 -fsS $Url 2>$null
     if ($LASTEXITCODE -ne 0 -or $value -notmatch '^\d+\.\d+\.\d+\.\d+$') {
         throw 'The HTTPS verification did not complete.'
     }
     $value.Trim()
+}
+
+function Get-VerifiedEgress([string] $Proxy) {
+    foreach ($url in @('https://api.ipify.org', 'https://ipv4.icanhazip.com')) {
+        try {
+            $expected = Get-ProbeIP $url $Proxy
+            $actual = Get-ProbeIP $url
+        } catch {
+            continue
+        }
+        if ($actual -ne $expected) { throw 'Windows and the selected VPN proxy use different egress addresses.' }
+        return [pscustomobject]@{url=$url;ip=$expected}
+    }
+    throw 'The HTTPS verification did not complete through both TUN and the local proxy.'
 }
 
 $stage = 'STATE'
@@ -121,20 +149,50 @@ function Read-ConnectionSettings {
     [pscustomobject]@{core=$core;tunnel=$tunnel;port=$port}
 }
 
+function Find-LocalController([int] $Port, [int[]] $FallbackPorts) {
+    $proxy = @(Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+    if ($proxy.Count -ne 1) { throw 'The local Mihomo proxy is not available.' }
+    $ports = if ($env:TUNNEL_GUARD_CONTROLLER_PORT) { [int] $env:TUNNEL_GUARD_CONTROLLER_PORT } else { $FallbackPorts }
+    $controller = @(Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $ports -State Listen -ErrorAction SilentlyContinue |
+        Where-Object OwningProcess -eq $proxy[0].OwningProcess)
+    if ($controller.Count -ne 1) { throw 'The local Mihomo controller is not available.' }
+    $controller[0]
+}
+
+function Read-LocalController([int] $Port, [string] $Endpoint) {
+    $request = [Net.WebRequest]::CreateHttp("http://127.0.0.1:$Port/$Endpoint")
+    $request.Proxy = $null
+    $request.AllowAutoRedirect = $false
+    $request.Timeout = 3000
+    $request.ReadWriteTimeout = 3000
+    $response = $null
+    $reader = $null
+    try {
+        if ($env:TUNNEL_GUARD_CONTROLLER_SECRET) {
+            $request.Headers['Authorization'] = "Bearer $env:TUNNEL_GUARD_CONTROLLER_SECRET"
+        }
+        $response = $request.GetResponse()
+        if ($response.StatusCode -ne [Net.HttpStatusCode]::OK) { throw 'Unexpected controller response.' }
+        $reader = [IO.StreamReader]::new($response.GetResponseStream(), [Text.Encoding]::UTF8)
+        $reader.ReadToEnd() | ConvertFrom-Json
+    } catch {
+        throw 'Could not read the local Mihomo controller. Check the generated config and controller key.'
+    } finally {
+        if ($reader) { $reader.Dispose() }
+        if ($response) { $response.Dispose() }
+    }
+}
+
 function Assert-TunReady($connection, [bool] $verifyCore) {
     $tunnel = $connection.tunnel
     $port = $connection.port
     $adapter = Get-NetAdapter -Name $tunnel -ErrorAction SilentlyContinue
     if ($adapter.Status -ne 'Up') { throw 'The selected TUN interface is not up.' }
-    $proxy = @(Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
-    $controller = @(Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort ($port+6) -State Listen -ErrorAction SilentlyContinue)
-    if ($proxy.Count -ne 1 -or $controller.Count -ne 1 -or $proxy[0].OwningProcess -ne $controller[0].OwningProcess) {
-        throw 'The selected Mihomo proxy and TUN controller are not both ready.'
-    }
-    if ($verifyCore -and (Get-Process -Id $proxy[0].OwningProcess -ErrorAction SilentlyContinue).Path -ne $connection.core) {
+    $controller = Find-LocalController $port @($port+6)
+    if ($verifyCore -and (Get-Process -Id $controller.OwningProcess -ErrorAction SilentlyContinue).Path -ne $connection.core) {
         throw 'The loopback proxy does not belong to the selected Mihomo installation.'
     }
-    $runtime = Invoke-RestMethod -Uri "http://127.0.0.1:$($port+6)/configs" -TimeoutSec 3
+    $runtime = Read-LocalController $controller.LocalPort 'configs'
     if ($runtime.mode -ne 'rule' -or -not $runtime.tun.enable -or $runtime.tun.device -ne $tunnel) {
         throw 'The selected Mihomo TUN must be up and in Rule mode.'
     }
@@ -145,16 +203,9 @@ try {
         $options = Get-Content -LiteralPath $SettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $port = [int] $options.proxy_port
         if ($port -lt 1 -or $port -gt 65529) { throw 'Invalid proxy port.' }
-        $proxyOwner = (Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort $port -State Listen).OwningProcess
-        $controller = @(
-            Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort ($port+6),($port+5) -State Listen -ErrorAction SilentlyContinue |
-                Where-Object OwningProcess -eq $proxyOwner
-        )
-        if ($controller.Count -ne 1) { throw 'The local Mihomo controller is not available.' }
+        $controller = Find-LocalController $port (($port+6),($port+5))
         $endpoint = if ($Action -eq 'Targets') { 'proxies' } else { 'rules' }
-        $raw = & $curl --noproxy '*' --max-time 4 -fsS "http://127.0.0.1:$($controller[0].LocalPort)/$endpoint"
-        if ($LASTEXITCODE -ne 0) { throw 'Could not read the local Mihomo controller.' }
-        $response = $raw | ConvertFrom-Json
+        $response = Read-LocalController $controller.LocalPort $endpoint
         if ($Action -eq 'Targets') {
             $reserved = @('Direct','Compatible','Pass','PassRule','Reject','RejectDrop','Dns',
                 'Selector','URLTest','Fallback','LoadBalance','Relay','Smart')
@@ -219,8 +270,17 @@ try {
     if (-not [Security.Principal.WindowsPrincipal]::new($identity).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Administrator rights required.' }
 
+    if ($Action -eq 'WfpDisable') {
+        $stage = 'RESTORE'
+        Set-GuardProgress 'restore'
+        if ($state -notin @('Off','LegacyInactive')) { Restore-Guard }
+        Invoke-WfpWorker 'Remove'
+        exit 0
+    }
+
+    $wfp = $Action -eq 'WfpEnable'
     $stage = 'POLICY'
-    if ($Action -eq 'CleanLegacy' -or $state -eq 'LegacyInactive') {
+    if ($Action -eq 'CleanLegacy' -or ($state -eq 'LegacyInactive' -and -not $wfp)) {
         if ($state -ne 'LegacyInactive') { throw 'Legacy cleanup requires the old protection to be off.' }
         Set-GuardProgress 'cleanup'
         Remove-GuardRules $legacy
@@ -237,9 +297,11 @@ try {
         Restore-Guard
         exit 0
     }
-    if ($state -eq 'On') { exit 0 }
+    if ($state -eq 'On' -and -not $wfp) { exit 0 }
     $stage = 'RESTORE'
-    if ($state -ne 'Off') { throw 'Restore the previous firewall policy first.' }
+    if ($state -ne 'Off' -and -not ($wfp -and $state -eq 'LegacyInactive')) {
+        throw 'Restore the previous firewall policy first.'
+    }
 
     $stage = 'SETTINGS'
     Set-GuardProgress 'settings'
@@ -254,68 +316,86 @@ try {
     $probe = '9.9.9.9'
     $normalRoute = Find-NetRoute -RemoteIPAddress $probe | Where-Object DestinationPrefix | Select-Object -Last 1
     if ($normalRoute.InterfaceAlias -ne $tunnel) { throw 'Normal traffic does not select the TUN adapter.' }
-    $gateway = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' |
-        Where-Object { $_.InterfaceAlias -ne $tunnel -and $_.NextHop -ne '0.0.0.0' } |
-        Sort-Object { $_.RouteMetric + (Get-NetIPInterface -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4).InterfaceMetric } |
-        Select-Object -First 1
+    $gateway = Find-PhysicalGateway 'IPv4' $tunnel
     if (-not $gateway) { throw 'No physical IPv4 route was found for the fail-closed test.' }
+    $probes = @([pscustomobject] @{address=$probe;prefix="$probe/32";gateway=$gateway})
+    if ($wfp) {
+        $gateway6 = Find-PhysicalGateway 'IPv6' $tunnel
+        if ($gateway6) {
+            $probes += [pscustomobject] @{address='2620:fe::fe';prefix='2620:fe::fe/128';gateway=$gateway6}
+        }
+    }
 
     $proxy = "http://127.0.0.1:$port"
     Set-GuardProgress 'egress'
-    $expected = Get-ProbeIP $proxy
-    if ((Get-ProbeIP) -ne $expected) { throw 'Windows and the selected VPN proxy use different egress addresses.' }
+    $egress = Get-VerifiedEgress $proxy
     $stage = 'CONFLICT'
-    if (Get-NetFirewallRule -PolicyStore $store -ErrorAction SilentlyContinue | Where-Object Direction -eq 'Outbound') {
+    if (-not $wfp -and (Get-NetFirewallRule -PolicyStore $store -ErrorAction SilentlyContinue | Where-Object Direction -eq 'Outbound')) {
         throw 'Local Group Policy already has outbound rules. They were left intact.'
     }
     $stage = 'VERIFY'
-    if (Get-NetRoute -DestinationPrefix "$probe/32" -ErrorAction SilentlyContinue) {
-        throw 'The verification address already has a host route.'
-    }
-    $stage = 'POLICY'
-    $saved = Get-NetFirewallProfile -PolicyStore $store |
-        Select-Object Name,Enabled,DefaultOutboundAction,AllowLocalFirewallRules
-    $hostRoute = $null
+    $hostRoutes = @()
     $started = $false
     try {
-        $stage = 'VERIFY'
-        $hostRoute = New-NetRoute -DestinationPrefix "$probe/32" -InterfaceIndex $gateway.InterfaceIndex `
-            -NextHop $gateway.NextHop -PolicyStore ActiveStore
-        if (-not (Test-Tcp $probe)) { throw 'The direct verification endpoint is unavailable before applying protection.' }
-        $stage = 'POLICY'
-        Set-GuardProgress 'backup'
-        $saved | Export-Clixml -LiteralPath $backup
-        $started = $true
-        Set-GuardProgress 'apply'
-        $allow = @{PolicyStore=$store;Group='Tunnel Guard';Direction='Outbound';Action='Allow';Profile='Any'}
-        New-NetFirewallRule @allow -Name $owned[0] -DisplayName 'Tunnel Guard - tunnel' -InterfaceAlias $tunnel | Out-Null
-        New-NetFirewallRule @allow -Name $owned[1] -DisplayName 'Tunnel Guard - Mihomo' -Program $core | Out-Null
-        New-NetFirewallRule @allow -Name $owned[2] -DisplayName 'Tunnel Guard - DHCP' `
-            -Service Dhcp -Protocol UDP -LocalPort 68 -RemotePort 67 | Out-Null
-        Set-NetFirewallProfile -PolicyStore $store -All -Enabled True `
-            -DefaultOutboundAction Block -AllowLocalFirewallRules False
-        Set-GuardProgress 'policy'
-        Refresh-Policy
+        foreach ($route in $probes) {
+            if (Get-NetRoute -DestinationPrefix $route.prefix -ErrorAction SilentlyContinue) {
+                throw 'The verification address already has a host route.'
+            }
+            $hostRoutes += New-NetRoute -DestinationPrefix $route.prefix -InterfaceIndex $route.gateway.InterfaceIndex `
+                -NextHop $route.gateway.NextHop -PolicyStore ActiveStore
+            if (-not (Test-Tcp $route.address)) {
+                throw 'A direct verification endpoint is unavailable before applying protection.'
+            }
+        }
+        if ($wfp) {
+            $stage = 'WFP'
+            Set-GuardProgress 'apply'
+            $started = $true
+            Invoke-WfpWorker 'Apply'
+        } else {
+            $stage = 'POLICY'
+            Set-GuardProgress 'backup'
+            Get-NetFirewallProfile -PolicyStore $store |
+                Select-Object Name,Enabled,DefaultOutboundAction,AllowLocalFirewallRules |
+                Export-Clixml -LiteralPath $backup
+            $started = $true
+            Set-GuardProgress 'apply'
+            $allow = @{PolicyStore=$store;Group='Tunnel Guard';Direction='Outbound';Action='Allow';Profile='Any'}
+            New-NetFirewallRule @allow -Name $owned[0] -DisplayName 'Tunnel Guard - tunnel' -InterfaceAlias $tunnel | Out-Null
+            New-NetFirewallRule @allow -Name $owned[1] -DisplayName 'Tunnel Guard - Mihomo' -Program $core | Out-Null
+            New-NetFirewallRule @allow -Name $owned[2] -DisplayName 'Tunnel Guard - DHCP' `
+                -Service Dhcp -Protocol UDP -LocalPort 68 -RemotePort 67 | Out-Null
+            Set-NetFirewallProfile -PolicyStore $store -All -Enabled True `
+                -DefaultOutboundAction Block -AllowLocalFirewallRules False
+            Set-GuardProgress 'policy'
+            Refresh-Policy
+            if ((Get-GuardState) -ne 'On') { throw 'Windows did not enforce the expected firewall policy.' }
+        }
         Set-GuardProgress 'verify'
-        if ((Get-GuardState) -ne 'On') { throw 'Windows did not enforce the expected firewall policy.' }
         $stage = 'VERIFY'
-        if ((Get-ProbeIP) -ne $expected) { throw 'VPN connectivity was lost after applying protection.' }
-        if (Test-Tcp $probe) { throw 'The direct verification route was still reachable.' }
+        if ((Get-ProbeIP $egress.url) -ne $egress.ip) { throw 'VPN connectivity was lost after applying protection.' }
+        foreach ($route in $probes) {
+            if (Test-Tcp $route.address) { throw 'A direct verification route was still reachable.' }
+        }
+        if ($wfp) {
+            $stage = 'WFP'
+            Invoke-WfpWorker 'Verify'
+        }
     } catch {
         if ($started) {
             $failedStage = $stage
             $stage = 'RESTORE'
             Set-GuardProgress 'restore'
-            Restore-Guard
+            if ($wfp) { Invoke-WfpWorker 'Remove' } else { Restore-Guard }
             $stage = $failedStage
         }
         throw
     } finally {
-        if ($hostRoute) { $hostRoute | Remove-NetRoute -Confirm:$false }
+        if ($hostRoutes) { $hostRoutes | Remove-NetRoute -Confirm:$false }
     }
-    Write-Output 'Verified: VPN HTTPS succeeds, direct IPv4 is blocked.'
+    Write-Output 'Verified: VPN HTTPS succeeds and direct verification routes are blocked.'
 } catch {
-    if ($Action -in @('Preflight','Enable','Disable','CleanLegacy')) {
+    if ($Action -in @('Preflight','Enable','Disable','CleanLegacy','WfpEnable','WfpDisable')) {
         [Console]::Error.WriteLine("TG_STAGE:$stage")
     }
     [Console]::Error.WriteLine($_.Exception.Message)

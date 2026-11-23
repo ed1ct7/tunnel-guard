@@ -7,11 +7,21 @@ use std::{
     process::Command,
 };
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProtectionBackend {
+    #[default]
+    GroupPolicy,
+    Wfp,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Settings {
     pub client_path: String,
     pub adapter: String,
     pub proxy_port: u16,
+    #[serde(default)]
+    pub protection_backend: ProtectionBackend,
 }
 
 impl Default for Settings {
@@ -20,6 +30,7 @@ impl Default for Settings {
             client_path: String::new(),
             adapter: "Mihomo".into(),
             proxy_port: 10808,
+            protection_backend: ProtectionBackend::default(),
         }
     }
 }
@@ -149,12 +160,21 @@ mod tests {
             client_path: String::new(),
             adapter: adapter.into(),
             proxy_port: port,
+            ..Settings::default()
         }
     }
 
     #[test]
     fn default_connection_is_valid() {
         assert!(validate_connection(&Settings::default()).is_ok());
+    }
+
+    #[test]
+    fn settings_saved_before_wfp_keep_group_policy() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"client_path":"","adapter":"Meta","proxy_port":10808}"#)
+                .unwrap();
+        assert_eq!(settings.protection_backend, ProtectionBackend::GroupPolicy);
     }
 
     #[test]

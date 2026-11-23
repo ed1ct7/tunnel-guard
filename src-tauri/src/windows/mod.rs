@@ -1,7 +1,11 @@
+mod wfp;
+pub(crate) use wfp::group_network;
+
 use crate::{
+    core_rules::load_generated,
     progress::{parse_progress, Progress, ProgressStage, PROGRESS_FILE},
-    settings::{lock_config, storage},
-    status::{now_ms, Action, Status},
+    settings::{client_path, load_settings, lock_config, storage, ProtectionBackend},
+    status::{now_ms, Action, GuardState, Status},
     Result,
 };
 use std::{
@@ -18,19 +22,23 @@ use std::{
     time::Duration,
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, HWND, INVALID_HANDLE_VALUE},
+    Foundation::{CloseHandle, HANDLE, HWND, INVALID_HANDLE_VALUE, WAIT_ABANDONED, WAIT_OBJECT_0},
     System::{
         Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
             TH32CS_SNAPPROCESS,
         },
         Threading::{
-            GetExitCodeProcess, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject,
-            CREATE_NO_WINDOW, INFINITE, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+            CreateMutexW, GetExitCodeProcess, OpenProcess, QueryFullProcessImageNameW,
+            ReleaseMutex, WaitForSingleObject, CREATE_NO_WINDOW, INFINITE, PROCESS_NAME_WIN32,
+            PROCESS_QUERY_LIMITED_INFORMATION,
         },
     },
     UI::{
-        Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
+        Shell::{
+            IsUserAnAdmin, ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS,
+            SHELLEXECUTEINFOW,
+        },
         WindowsAndMessaging::SW_SHOWNORMAL,
     },
 };
@@ -60,18 +68,69 @@ fn run_script(action: &str, progress: Option<&Path>, extra: &[(&str, &OsStr)]) -
         process.env(key, value);
     }
     process
+        .env_remove("TUNNEL_GUARD_CONTROLLER_PORT")
+        .env_remove("TUNNEL_GUARD_CONTROLLER_SECRET")
+        .env_remove("TUNNEL_GUARD_WFP_WORKER");
+    if matches!(action, "WfpEnable" | "WfpDisable") {
+        process.env(
+            "TUNNEL_GUARD_WFP_WORKER",
+            env::current_exe().map_err(|error| error.to_string())?,
+        );
+    }
+    if matches!(
+        action,
+        "Rules" | "Targets" | "Preflight" | "Enable" | "WfpEnable"
+    ) {
+        if let Some((port, secret)) = configured_controller() {
+            process.env("TUNNEL_GUARD_CONTROLLER_PORT", port.to_string());
+            if let Some(secret) = secret {
+                process.env("TUNNEL_GUARD_CONTROLLER_SECRET", secret);
+            }
+        }
+    }
+    process
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|error| error.to_string())
 }
 
-pub fn status() -> Result<Status> {
+fn configured_controller() -> Option<(u16, Option<String>)> {
+    let settings = load_settings().ok()?;
+    let client = client_path(&settings).ok()?;
+    let config = load_generated(client.parent()?, settings.proxy_port).ok()?;
+    Some((config.controller_port()?, config.secret()))
+}
+
+fn group_policy_status() -> Result<Status> {
     let output = powershell("Status")?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().into());
     }
     serde_json::from_slice(&output.stdout)
         .map_err(|_| "Не удалось прочитать фактический статус Windows.".into())
+}
+
+pub fn status() -> Result<Status> {
+    let mut status = group_policy_status()?;
+    let settings = load_settings()?;
+    let (state, tunnel_matches) =
+        wfp::status(status.adapter_up.then_some(settings.adapter.as_str()))?;
+    match (state, status.state) {
+        (GuardState::Off, GuardState::On | GuardState::Partial | GuardState::LegacyActive) => {
+            status.active_backend = Some(ProtectionBackend::GroupPolicy);
+        }
+        (GuardState::Off, _) => {}
+        (wfp, GuardState::Off | GuardState::LegacyInactive) => {
+            status.state = wfp;
+            status.active_backend = Some(ProtectionBackend::Wfp);
+            status.adapter_up &= tunnel_matches;
+        }
+        _ => {
+            // Concurrent policies may override one another. Require recovery.
+            status.state = GuardState::Partial;
+        }
+    }
+    Ok(status)
 }
 
 pub fn active_rules() -> Result<serde_json::Value> {
@@ -183,13 +242,71 @@ pub fn worker(args: &[String]) -> i32 {
     run_worker(args, None)
 }
 
+pub fn wfp_worker(args: &[String]) -> i32 {
+    wfp::run(args)
+}
+
+struct PolicyLock(HANDLE);
+
+impl PolicyLock {
+    fn acquire() -> Option<Self> {
+        let name = wide(OsStr::new("Global\\TunnelGuardFirewallPolicy"));
+        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+        if handle.is_null() {
+            return None;
+        }
+        if matches!(
+            unsafe { WaitForSingleObject(handle, 0) },
+            WAIT_OBJECT_0 | WAIT_ABANDONED
+        ) {
+            return Some(Self(handle));
+        }
+        unsafe { CloseHandle(handle) };
+        None
+    }
+}
+
+impl Drop for PolicyLock {
+    fn drop(&mut self) {
+        unsafe {
+            ReleaseMutex(self.0);
+            CloseHandle(self.0);
+        }
+    }
+}
+
 fn run_worker(args: &[String], progress: Option<&Path>) -> i32 {
     let [action] = args else { return 20 };
     if !matches!(action.as_str(), "Enable" | "Disable" | "CleanLegacy") {
         return 20;
     }
+    if !is_admin() {
+        return 22;
+    }
     let Ok(_config_lock) = lock_config() else {
         return 28;
+    };
+    let Some(_policy_lock) = PolicyLock::acquire() else {
+        return 28;
+    };
+    let Ok((wfp, _)) = wfp::status(None) else {
+        return 31;
+    };
+    let action = match (action.as_str(), wfp) {
+        ("Enable", GuardState::On) => {
+            return match group_policy_status().map(|status| status.state) {
+                Ok(GuardState::Off | GuardState::LegacyInactive) => 0,
+                _ => 26,
+            };
+        }
+        ("Enable" | "CleanLegacy", GuardState::Partial | GuardState::On) => return 26,
+        ("Disable", GuardState::Partial | GuardState::On) => "WfpDisable",
+        ("Enable", _) => match load_settings() {
+            Ok(settings) if settings.protection_backend == ProtectionBackend::Wfp => "WfpEnable",
+            Ok(_) => "Enable",
+            Err(_) => return 29,
+        },
+        (action, _) => action,
     };
     let Ok(output) = run_script(action, progress, &[]) else {
         return 21;
@@ -213,6 +330,7 @@ fn failure_code(stderr: &[u8]) -> u32 {
         Some("RESTORE") => 26,
         Some("SETTINGS") => 29,
         Some("POLICY") => 30,
+        Some("WFP") => 31,
         _ => 27,
     }
 }
@@ -335,13 +453,55 @@ fn run_elevated(
             return worker_result(failure_code(&check.stderr));
         }
     }
+    progress.emit(report, ProgressStage::Elevate);
+    let parameters = format!("--firewall-worker {}", action.name());
+    let code = elevated_result(parent, &parameters, |process| {
+        progress.watch(report, || unsafe { WaitForSingleObject(process, INFINITE) })
+    })?;
+    worker_result(code)
+}
+
+pub(crate) fn is_admin() -> bool {
+    unsafe { IsUserAnAdmin() != 0 }
+}
+
+pub(crate) fn elevate_network_worker(
+    parent: isize,
+    id: &str,
+    blocked: bool,
+    fingerprint: Option<&str>,
+) -> Result<()> {
+    let parameters = if blocked {
+        let fingerprint = fingerprint.ok_or("Отсутствует проверенный список путей группы.")?;
+        format!("--process-network-worker block {id} {fingerprint}")
+    } else {
+        format!("--process-network-worker unblock {id}")
+    };
+    let code = elevated_result(parent, &parameters, |process| unsafe {
+        WaitForSingleObject(process, INFINITE)
+    })?;
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(
+            "Не удалось изменить доступ группы к сети. Проверь, что все указанные .exe существуют."
+                .into(),
+        )
+    }
+}
+
+fn elevated_result(
+    parent: isize,
+    parameters: &str,
+    wait: impl FnOnce(HANDLE) -> u32,
+) -> Result<u32> {
     let executable = wide(
         env::current_exe()
             .map_err(|error| error.to_string())?
             .as_os_str(),
     );
     let verb = wide(OsStr::new("runas"));
-    let parameters = wide(OsStr::new(&format!("--firewall-worker {}", action.name())));
+    let parameters = wide(OsStr::new(parameters));
     let mut request = SHELLEXECUTEINFOW {
         cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
         fMask: SEE_MASK_NOASYNC | SEE_MASK_NOCLOSEPROCESS,
@@ -352,7 +512,6 @@ fn run_elevated(
         nShow: SW_SHOWNORMAL,
         ..Default::default()
     };
-    progress.emit(report, ProgressStage::Elevate);
     unsafe {
         if ShellExecuteExW(&mut request) == 0 || request.hProcess.is_null() {
             let error = io::Error::last_os_error();
@@ -363,14 +522,14 @@ fn run_elevated(
             });
         }
         let process = request.hProcess;
-        let wait = progress.watch(report, || WaitForSingleObject(process, INFINITE));
+        let wait = wait(process);
         let mut code = 0;
         let read = GetExitCodeProcess(request.hProcess, &mut code);
         CloseHandle(request.hProcess);
         if wait != 0 || read == 0 {
             return Err("Не удалось получить результат изменения правил.".into());
         }
-        worker_result(code)
+        Ok(code)
     }
 }
 
@@ -385,6 +544,7 @@ pub fn worker_result(code: u32) -> Result<()> {
         28 => Err("Tunnel Guard уже меняет настройки. Повтори после завершения операции.".into()),
         29 => Err("Проверь путь к v2rayN, имя TUN-адаптера и порт прокси во вкладке «Подключение».".into()),
         30 => Err("Windows не применила ожидаемую политику брандмауэра. Проверь фактический статус защиты в панели.".into()),
+        31 => Err("Windows не подтвердила состояние фильтров WFP. Проверь фактический статус защиты в панели.".into()),
         _ => Err(format!("Windows не завершила изменение правил. Код {code}.")),
     }
 }

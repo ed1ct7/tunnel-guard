@@ -1,4 +1,4 @@
-use crate::Result;
+use crate::{settings::ProtectionBackend, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
@@ -20,6 +20,8 @@ pub(crate) enum GuardState {
 pub(crate) struct Status {
     pub state: GuardState,
     pub adapter_up: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_backend: Option<ProtectionBackend>,
     /// Unix ms of the read; set in Rust, absent in the script output.
     #[serde(default)]
     pub checked_at: u64,
@@ -36,6 +38,7 @@ impl Status {
         Self {
             state: GuardState::Unknown,
             adapter_up: false,
+            active_backend: None,
             checked_at: now_ms(),
         }
     }
@@ -72,6 +75,7 @@ pub(crate) fn unsupported_status() -> Status {
     Status {
         state: GuardState::Unsupported,
         adapter_up: false,
+        active_backend: None,
         checked_at: now_ms(),
     }
 }
@@ -154,6 +158,7 @@ mod tests {
             Status {
                 state: GuardState::On,
                 adapter_up: true,
+                active_backend: None,
                 checked_at: 0,
             }
         );
@@ -164,6 +169,7 @@ mod tests {
         let value = serde_json::to_value(Status {
             state: GuardState::Partial,
             adapter_up: false,
+            active_backend: None,
             checked_at: 42,
         })
         .unwrap();
@@ -178,6 +184,7 @@ mod tests {
         let a = Status {
             state: GuardState::On,
             adapter_up: true,
+            active_backend: None,
             checked_at: 1,
         };
         let b = Status {

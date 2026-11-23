@@ -1,7 +1,26 @@
-import { AppWindow, Layers, Pencil, Plus, RefreshCw, Search, Square, Trash2, X } from "lucide-react";
+import {
+  AppWindow,
+  Layers,
+  Lock,
+  LockOpen,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Search,
+  Square,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { api, errorText } from "../api/backend";
-import type { Outcome, ProcessGroup, ProcessGroupsConfig, Selector, SelectorKind } from "../api/types";
+import type {
+  Outcome,
+  ProcessGroup,
+  ProcessGroupsConfig,
+  ProcessNetworkState,
+  Selector,
+  SelectorKind,
+} from "../api/types";
 import { Button } from "../components/Button";
 import { useConfirm } from "../components/ConfirmDialog";
 import { Dialog } from "../components/Dialog";
@@ -49,6 +68,9 @@ export function ProcessesPage() {
   const [reloading, setReloading] = useState(false);
   const [draft, setDraft] = useState<ProcessGroup | null>(null);
   const [running, setRunning] = useState<{ id: string; stop: boolean } | null>(null);
+  const [networkStates, setNetworkStates] = useState<Record<string, ProcessNetworkState>>({});
+  const [networkError, setNetworkError] = useState<string | null>(null);
+  const [networkChange, setNetworkChange] = useState<string | null>(null);
   const [result, setResult] = useState<Result | null>(null);
   const [runError, setRunError] = useState<{ groupId: string; text: string } | null>(null);
 
@@ -71,21 +93,35 @@ export function ProcessesPage() {
     [],
   );
 
+  const loadNetwork = useCallback(
+    () =>
+      api.processNetworkStates().then(
+        (value) => {
+          setNetworkStates(value);
+          setNetworkError(null);
+        },
+        (reason: unknown) => setNetworkError(errorText(reason)),
+      ),
+    [],
+  );
+
   useEffect(() => {
     void load();
+    void loadNetwork();
     const timer = window.setInterval(() => {
       if (!editing.current)
         api
           .loadProcessGroups()
           .then(setConfig)
           .catch(() => undefined);
+      void loadNetwork();
     }, POLL_MS);
     return () => window.clearInterval(timer);
-  }, [load]);
+  }, [load, loadNetwork]);
 
   async function reload() {
     setReloading(true);
-    await load();
+    await Promise.all([load(), loadNetwork()]);
     setReloading(false);
   }
 
@@ -120,14 +156,43 @@ export function ProcessesPage() {
     }
   }
 
-  const busy = running !== null;
+  async function changeNetwork(group: ProcessGroup, blocked: boolean) {
+    if (
+      blocked &&
+      !(await confirm({
+        tone: "danger",
+        title: `Заблокировать сеть для «${group.title}»?`,
+        body: (
+          <p>
+            Windows запросит права администратора. Блокировка действует на программы, указанные в этой группе
+            полным путём к .exe, и сохраняется до нажатия «Вернуть сеть».
+          </p>
+        ),
+        confirmLabel: "Заблокировать сеть",
+      }))
+    ) {
+      return;
+    }
+    setNetworkChange(group.id);
+    setRunError(null);
+    try {
+      await api.setProcessNetwork(group.id, blocked, config);
+    } catch (reason) {
+      setRunError({ groupId: group.id, text: errorText(reason) });
+    } finally {
+      await loadNetwork();
+      setNetworkChange(null);
+    }
+  }
+
+  const busy = running !== null || networkChange !== null;
   const editorReason = !loaded ? "Список групп ещё не прочитан." : null;
 
   return (
     <div className="page page-processes">
       <PageHeader
         title="Процессы"
-        lead="Группы приложений вместе с их помощниками и службами. Одна команда найдёт или завершит их все — например, перед сменой сервера, чтобы старые соединения не остались висеть."
+        lead="Найди или заверши процессы и службы группы. Доступ к сети управляется отдельной кнопкой."
         actions={
           <>
             <Button size="sm" variant="ghost" icon={RefreshCw} busy={reloading} onClick={() => void reload()}>
@@ -149,6 +214,7 @@ export function ProcessesPage() {
       />
 
       {loadError && <InlineError>Не удалось прочитать группы: {loadError}</InlineError>}
+      {networkError && <InlineError>Не удалось проверить сетевые блокировки: {networkError}</InlineError>}
 
       {loaded && config.groups.length === 0 && (
         <div className="panel empty-state">
@@ -169,11 +235,20 @@ export function ProcessesPage() {
           const isRunning = running?.id === group.id;
           const own = result?.groupId === group.id ? result : null;
           const error = runError?.groupId === group.id ? runError.text : null;
+          const network = networkStates[group.id];
+          const canRestore = network === "blocked" || network === "partial";
+          const hasNetworkPaths = group.selectors.some((selector) => selector.kind === "path");
+          const networkReason = !network
+            ? "Состояние блокировки ещё не прочитано."
+            : !canRestore && !hasNetworkPaths
+              ? "Добавь в группу полный путь к .exe."
+              : null;
+          const detailsCount = group.selectors.length + group.includes.length;
           return (
             <section className="panel group-card" key={group.id} aria-labelledby={`group-${group.id}`}>
               <header className="group-card-head">
                 <h2 id={`group-${group.id}`}>{group.title}</h2>
-                <span className="group-card-actions">
+                <div className="group-card-actions">
                   <Button
                     size="sm"
                     variant="ghost"
@@ -205,26 +280,45 @@ export function ProcessesPage() {
                   >
                     Завершить
                   </Button>
-                </span>
+                  <Button
+                    size="sm"
+                    icon={canRestore ? LockOpen : Lock}
+                    busy={networkChange === group.id}
+                    disabled={busy}
+                    disabledReason={networkReason}
+                    onClick={() => void changeNetwork(group, !canRestore)}
+                  >
+                    {canRestore ? "Вернуть сеть" : "Заблокировать сеть"}
+                  </Button>
+                </div>
               </header>
-              <div className="chips">
-                {group.selectors.map((selector, index) => (
-                  <span className="chip" key={index} title={kindLabel(selector.kind)}>
-                    <span className="chip-kind">{kindLabel(selector.kind)}</span>
-                    <span className="mono">{selectorText(selector)}</span>
-                  </span>
-                ))}
-                {group.includes.map((id) => (
-                  <span className="chip chip-group" key={id}>
-                    <Layers size={13} aria-hidden />
-                    <span className="chip-kind">группа</span>
-                    {groupTitle(config.groups, id)}
-                  </span>
-                ))}
-                {!group.selectors.length && !group.includes.length && (
-                  <span className="muted">Нет условий поиска.</span>
-                )}
-              </div>
+              {canRestore && (
+                <p className="group-network-status" role="status">
+                  {network === "blocked"
+                    ? "Сеть для указанных .exe заблокирована."
+                    : "Часть сетевых фильтров недоступна. Блокировку можно снять."}
+                </p>
+              )}
+              {detailsCount > 0 && (
+                <details className="process-details">
+                  <summary>Состав группы ({detailsCount})</summary>
+                  <div className="chips">
+                    {group.selectors.map((selector, index) => (
+                      <span className="chip" key={index}>
+                        <span className="chip-kind">{kindLabel(selector.kind)}</span>
+                        <span className="mono">{selectorText(selector)}</span>
+                      </span>
+                    ))}
+                    {group.includes.map((id) => (
+                      <span className="chip chip-group" key={id}>
+                        <Layers size={13} aria-hidden />
+                        <span className="chip-kind">группа</span>
+                        <span>{groupTitle(config.groups, id)}</span>
+                      </span>
+                    ))}
+                  </div>
+                </details>
+              )}
               {error && <InlineError>{error}</InlineError>}
               {own && <OutcomeView result={own} onClose={() => setResult(null)} />}
             </section>
@@ -240,6 +334,7 @@ export function ProcessesPage() {
         onSaved={(next) => {
           setConfig(next);
           setDraft(null);
+          void loadNetwork();
         }}
       />
     </div>
@@ -309,34 +404,37 @@ function OutcomeView({ result, onClose }: { result: Result; onClose: () => void 
         </p>
       )}
       {(processes.length > 0 || outcome.services.length > 0) && (
-        <table className="outcome-table">
-          <thead>
-            <tr>
-              <th scope="col">{stop ? "Ещё работает" : "Найдено"}</th>
-              <th scope="col">Подробности</th>
-            </tr>
-          </thead>
-          <tbody>
-            {processes.map((process) => (
-              <tr key={process.pid}>
-                <td className="mono">{process.name}</td>
-                <td>
-                  PID <span className="num">{process.pid}</span>
-                  {process.owned ? "" : " · другой пользователь, нужны права администратора"}
-                </td>
+        <details className="process-details">
+          <summary>Процессы и службы ({processes.length + outcome.services.length})</summary>
+          <table className="outcome-table">
+            <thead>
+              <tr>
+                <th scope="col">{stop ? "Ещё работает" : "Найдено"}</th>
+                <th scope="col">Подробности</th>
               </tr>
-            ))}
-            {outcome.services.map((service) => (
-              <tr key={service.name}>
-                <td className="mono">{service.name}</td>
-                <td title={service.error ?? undefined}>
-                  служба {serviceStatus[service.status] ?? service.status}
-                  {service.error ? ` · не удалось остановить: ${service.error}` : ""}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {processes.map((process) => (
+                <tr key={process.pid}>
+                  <td className="mono">{process.name}</td>
+                  <td>
+                    PID <span className="num">{process.pid}</span>
+                    {process.owned ? "" : " · владелец процесса не подтверждён"}
+                  </td>
+                </tr>
+              ))}
+              {outcome.services.map((service) => (
+                <tr key={service.name}>
+                  <td className="mono">{service.name}</td>
+                  <td title={service.error ?? undefined}>
+                    служба {serviceStatus[service.status] ?? service.status}
+                    {service.error ? ` · не удалось остановить: ${service.error}` : ""}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </details>
       )}
     </div>
   );
@@ -518,28 +616,6 @@ function GroupEditor({
 
         <fieldset className="editor-section">
           <legend>Что входит в группу</legend>
-          {current.selectors.length > 0 ? (
-            <ul className="selector-list">
-              {current.selectors.map((entry, index) => (
-                <li key={index}>
-                  <span className="chip-kind">{kindLabel(entry.kind)}</span>
-                  <span className="mono selector-value">{selectorText(entry)}</span>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    icon={X}
-                    aria-label={`Убрать условие ${selectorText(entry)}`}
-                    title="Убрать условие"
-                    onClick={() =>
-                      onChange({ ...current, selectors: current.selectors.filter((_, i) => i !== index) })
-                    }
-                  />
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="muted">Условий пока нет. Добавь программу, службу или фрагмент командной строки.</p>
-          )}
           <div className="selector-add">
             <Field label="Как искать" className="field-kind">
               {(props) => (
@@ -601,12 +677,35 @@ function GroupEditor({
               Добавить
             </Button>
           </div>
+          {current.selectors.length > 0 && (
+            <details className="process-details">
+              <summary>Условия поиска ({current.selectors.length})</summary>
+              <ul className="selector-list">
+                {current.selectors.map((entry, index) => (
+                  <li key={index}>
+                    <span className="chip-kind">{kindLabel(entry.kind)}</span>
+                    <span className="mono selector-value">{selectorText(entry)}</span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon={X}
+                      aria-label={`Убрать условие ${selectorText(entry)}`}
+                      title="Убрать условие"
+                      onClick={() =>
+                        onChange({ ...current, selectors: current.selectors.filter((_, i) => i !== index) })
+                      }
+                    />
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
         </fieldset>
 
         {others.length > 0 && (
           <fieldset className="editor-section includes">
             <legend>Включить другие группы</legend>
-            <p className="muted">Общая группа выполняет команду сразу для всех включённых.</p>
+            <p className="muted">Поиск и завершение охватывают включённые группы.</p>
             {others.map((group) => {
               const cycle = blocked.has(group.id);
               const checked = current.includes.includes(group.id);

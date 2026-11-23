@@ -69,6 +69,7 @@ mod tests {
         tray_view(&Status {
             state,
             adapter_up,
+            active_backend: None,
             checked_at: 0,
         })
     }

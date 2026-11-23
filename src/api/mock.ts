@@ -1,6 +1,7 @@
 // In-memory stand-in for the Rust backend. Loaded only by the dev server (or `vite build --mode mock`)
 // when the page is not running inside Tauri. Never touches the real system.
 import type { Transport } from "./backend";
+import { defaultSettings } from "../domain/settings";
 import type {
   Check,
   CheckId,
@@ -104,7 +105,7 @@ const messages = {
 function baseWorld(): World {
   return {
     protection: "On",
-    settings: { client_path: v2raynPath, adapter: "Mihomo", proxy_port: 10808 },
+    settings: { ...defaultSettings, client_path: v2raynPath },
     clientRunning: true,
     coreRunning: true,
     tunEnabled: true,
@@ -148,7 +149,7 @@ function scenarioWorld(name: ScenarioName): World {
       break;
     case "unconfigured":
       world.protection = "Off";
-      world.settings = { client_path: "", adapter: "Mihomo", proxy_port: 10808 };
+      world.settings = { ...defaultSettings };
       world.rules = [];
       world.coreRules = [];
       world.groups = [];
@@ -262,7 +263,14 @@ export class MockBackend {
   }
 
   private status(): Status {
-    return { state: this.world.protection, adapter_up: this.tunUp(), checked_at: Date.now() };
+    const { protection, settings } = this.world;
+    return {
+      state: protection,
+      adapter_up: this.tunUp(),
+      checked_at: Date.now(),
+      active_backend:
+        protection === "On" || protection === "Partial" ? settings.protection_backend : undefined,
+    };
   }
 
   private snapshot(): ConfigSnapshot {
@@ -431,6 +439,8 @@ export class MockBackend {
     ];
   }
 
+  private blockedGroups = new Set<string>();
+
   private commands: Record<string, (args: Record<string, unknown>) => Promise<unknown>> = {
     load_settings: async () => {
       await this.wait(200);
@@ -522,11 +532,50 @@ export class MockBackend {
       await this.wait(300);
       return structuredClone({ groups: this.world.groups });
     },
+    process_network_states: () =>
+      Promise.resolve(
+        Object.fromEntries(
+          this.world.groups.map(({ id }) => [id, this.blockedGroups.has(id) ? "blocked" : "off"]),
+        ),
+      ),
+    set_process_network: async (args) => {
+      const { id, blocked, original } = args as {
+        id: string;
+        blocked: boolean;
+        original: ProcessGroupsConfig;
+      };
+      await this.wait(600);
+      if (!blocked) {
+        this.blockedGroups.delete(id);
+        return null;
+      }
+      if (!equal(original.groups, this.world.groups)) {
+        throw new Error("Группы изменились. Перечитай список и повтори действие.");
+      }
+      const group = this.world.groups.find((item) => item.id === id);
+      if (!group) throw new Error("Группа «" + id + "» не найдена.");
+      if (!group.selectors.some((selector) => selector.kind === "path")) {
+        throw new Error("Добавь в группу хотя бы один полный путь к .exe.");
+      }
+      this.blockedGroups.add(id);
+      return null;
+    },
     save_process_groups: async (args) => {
       await this.wait(600);
       const { config, original } = args as { config: ProcessGroupsConfig; original: ProcessGroupsConfig };
       if (!equal(original.groups, this.world.groups)) {
         throw new Error("Группы уже изменились в другой программе. Перечитай список.");
+      }
+      for (const group of original.groups) {
+        if (
+          this.blockedGroups.has(group.id) &&
+          !equal(
+            group,
+            config.groups.find((item) => item.id === group.id),
+          )
+        ) {
+          throw new Error(`Сначала верни доступ к сети группе «${group.title}».`);
+        }
       }
       const ids = new Set<string>();
       for (const group of config.groups) {
@@ -605,7 +654,7 @@ export class MockBackend {
       const found: ClientDetection =
         this.scenario === "unconfigured"
           ? {
-              settings: { client_path: v2raynPath, adapter: "Mihomo", proxy_port: 10808 },
+              settings: { ...defaultSettings, client_path: v2raynPath },
               candidates: ["D:\\Portable\\v2rayN-7.9\\v2rayN.exe"],
               note: "Найдены две копии v2rayN. Выбрана та, что запущена сейчас.",
             }

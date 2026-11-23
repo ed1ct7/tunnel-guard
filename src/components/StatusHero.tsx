@@ -1,5 +1,6 @@
 import { ExternalLink, Power, PowerOff, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
-import type { Diagnosis, Status } from "../api/types";
+import type { Diagnosis, ProtectionBackend, Status } from "../api/types";
+import { protectionBackendLabels } from "../domain/settings";
 import { blockingProblems } from "../domain/checks";
 import { cx, plural } from "../domain/format";
 import { activeStepLabel, type Run } from "../domain/progress";
@@ -44,6 +45,7 @@ type StatusHeroProps = {
   statusError: string | null;
   view: StatusView;
   adapter: string;
+  selectedBackend: ProtectionBackend | null;
   refreshing: boolean;
   onRefresh: () => void;
   primary: PrimaryAction;
@@ -98,6 +100,12 @@ export function StatusHero(props: StatusHeroProps) {
       </div>
 
       <RouteStrip tunnel={view.tunnel} direct={view.direct} adapter={props.adapter} />
+
+      {status?.active_backend ? (
+        <p className="hero-note">Применённые правила · {protectionBackendLabels[status.active_backend]}</p>
+      ) : props.selectedBackend && status?.state === "Off" ? (
+        <p className="hero-note">Выбранный способ · {protectionBackendLabels[props.selectedBackend]}</p>
+      ) : null}
 
       {props.statusError && <InlineError>Не удалось прочитать статус: {props.statusError}</InlineError>}
 

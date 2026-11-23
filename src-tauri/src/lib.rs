@@ -28,5 +28,12 @@ pub fn run() {
 }
 
 pub fn run_cli() -> i32 {
+    #[cfg(windows)]
+    {
+        let args: Vec<_> = std::env::args().collect();
+        if args.get(1).map(String::as_str) == Some("--wfp-worker") {
+            return windows::wfp_worker(&args[2..]);
+        }
+    }
     cli::run()
 }

@@ -153,7 +153,11 @@ try {
     foreach ($service in $services) {
         if ($service.status -eq 'Stopped') { continue }
         try {
-            Stop-Service -InputObject (Get-Service -Name $service.name) -ErrorAction Stop
+            $controller = Get-Service -Name $service.name -ErrorAction Stop
+            if ($controller.Status -ne 'StopPending') {
+                Stop-Service -InputObject $controller -ErrorAction Stop
+            }
+            $controller.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(8))
         } catch {
             $service.error = $_.Exception.Message
         }

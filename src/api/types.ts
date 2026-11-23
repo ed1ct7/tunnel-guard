@@ -1,17 +1,25 @@
-// Backend contract for Tunnel Guard 0.5. Field names are snake_case on purpose:
+// Field names are snake_case on purpose:
 // they mirror the JSON that the Rust side serialises. Keep in sync with contract.md.
 
 export type GuardState =
   "On" | "Off" | "Partial" | "LegacyActive" | "LegacyInactive" | "Unsupported" | "Unknown";
 
+export type ProtectionBackend = "group_policy" | "wfp";
+
 export type Status = {
   state: GuardState;
   adapter_up: boolean;
+  active_backend?: ProtectionBackend;
   /** Unix time in ms of the read that produced this status. */
   checked_at: number;
 };
 
-export type Settings = { client_path: string; adapter: string; proxy_port: number };
+export type Settings = {
+  client_path: string;
+  adapter: string;
+  proxy_port: number;
+  protection_backend: ProtectionBackend;
+};
 export type ConfigSnapshot = { settings: Settings; rules: string[] | null };
 
 export type CheckId =
@@ -73,8 +81,14 @@ export type ClientDetection = {
 // Process groups (unchanged from 0.4).
 export type SelectorKind = "name" | "path" | "package_family" | "argument" | "service";
 export type Selector = { kind: SelectorKind; value: string; image?: string };
-export type ProcessGroup = { id: string; title: string; selectors: Selector[]; includes: string[] };
+export type ProcessGroup = {
+  id: string;
+  title: string;
+  selectors: Selector[];
+  includes: string[];
+};
 export type ProcessGroupsConfig = { groups: ProcessGroup[] };
+export type ProcessNetworkState = "off" | "blocked" | "partial";
 export type ProcessInfo = { pid: number; name: string; owned: boolean };
 export type ServiceOutcome = { name: string; status: string; error?: string | null };
 export type Outcome = {
@@ -107,6 +121,11 @@ export type CommandMap = {
   load_process_groups: { args: undefined; result: ProcessGroupsConfig };
   save_process_groups: { args: { config: ProcessGroupsConfig; original: ProcessGroupsConfig }; result: null };
   run_process_group: { args: { id: string; stop: boolean; original: ProcessGroupsConfig }; result: Outcome };
+  process_network_states: { args: undefined; result: Record<string, ProcessNetworkState> };
+  set_process_network: {
+    args: { id: string; blocked: boolean; original: ProcessGroupsConfig };
+    result: null;
+  };
   change_protection: { args: { action: ProtectionAction }; result: null };
   guard_status: { args: undefined; result: Status };
   diagnose: { args: undefined; result: Diagnosis };

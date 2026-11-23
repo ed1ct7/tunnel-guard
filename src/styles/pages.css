@@ -261,24 +261,37 @@
 
 /* ---------- processes ---------- */
 
+.page-processes .page-head,
+.page-processes .page-actions {
+  flex-wrap: wrap;
+}
+
+.page-processes .page-head-text {
+  flex-basis: 14rem;
+}
+
 .group-cards {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
 .group-card {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
+  overflow-wrap: anywhere;
 }
 
 .group-card-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 8px 10px;
 }
 
 .group-card-head h2 {
-  flex: 1;
+  flex: 1 1 7rem;
   min-width: 0;
   overflow: hidden;
   font-size: var(--text-l);
@@ -288,7 +301,42 @@
 
 .group-card-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
+}
+
+.group-network-status {
+  color: var(--warn);
+  font-size: var(--text-s);
+}
+
+.process-details {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--text-s);
+}
+
+.process-details > summary {
+  width: fit-content;
+  max-width: 100%;
+  cursor: pointer;
+}
+
+.process-details[open] > summary {
+  margin-bottom: 8px;
+}
+
+.process-details .chip {
+  min-width: 0;
+  color: var(--text);
+}
+
+.process-details .chip > .mono {
+  white-space: normal;
+}
+
+.outcome .process-details {
+  margin-top: 4px;
 }
 
 .outcome {
@@ -347,11 +395,14 @@
 
 .group-editor {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
+  overflow-wrap: anywhere;
 }
 
 .editor-section {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   min-width: 0;
   margin: 0;
@@ -372,13 +423,15 @@
 
 .selector-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px;
   padding: 0;
   list-style: none;
 }
 
 .selector-list li {
-  display: flex;
+  display: grid;
+  grid-template-columns: fit-content(9rem) minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   padding: 3px 4px 3px 10px;
@@ -388,11 +441,7 @@
 }
 
 .selector-value {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--text);
 }
 
 .selector-add {

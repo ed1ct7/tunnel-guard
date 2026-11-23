@@ -8,6 +8,12 @@ pub(crate) fn worker_exit_code() -> Option<i32> {
         if args.get(1).map(String::as_str) == Some("--firewall-worker") {
             return Some(crate::windows::elevated_worker(&args[2..]));
         }
+        if args.get(1).map(String::as_str) == Some("--wfp-worker") {
+            return Some(crate::windows::wfp_worker(&args[2..]));
+        }
+        if args.get(1).map(String::as_str) == Some("--process-network-worker") {
+            return Some(process_groups::group_network_worker(&args[2..]));
+        }
     }
     None
 }
@@ -33,6 +39,8 @@ pub(crate) fn run() {
             process_groups::load_process_groups,
             process_groups::save_process_groups,
             process_groups::run_process_group,
+            process_groups::process_network_states,
+            process_groups::set_process_network,
             commands::pick_exe,
             commands::open_client,
             commands::load_rules,

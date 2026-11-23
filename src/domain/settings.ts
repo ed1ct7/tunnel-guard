@@ -1,6 +1,16 @@
-import type { GuardState, Settings } from "../api/types";
+import type { GuardState, ProtectionBackend, Settings } from "../api/types";
 
-export const defaultSettings: Settings = { client_path: "", adapter: "Mihomo", proxy_port: 10808 };
+export const defaultSettings: Settings = {
+  client_path: "",
+  adapter: "Mihomo",
+  proxy_port: 10808,
+  protection_backend: "group_policy",
+};
+
+export const protectionBackendLabels: Record<ProtectionBackend, string> = {
+  group_policy: "Локальная групповая политика",
+  wfp: "Windows Filtering Platform (WFP)",
+};
 
 /**
  * The backend reads the controller port from v2rayN's generated Mihomo config and falls back to
@@ -36,6 +46,7 @@ export function sameSettings(left: Settings, right: Settings) {
   return (
     left.client_path === right.client_path &&
     left.adapter === right.adapter &&
-    left.proxy_port === right.proxy_port
+    left.proxy_port === right.proxy_port &&
+    left.protection_backend === right.protection_backend
   );
 }

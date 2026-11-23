@@ -8,7 +8,13 @@ import { Checklist } from "../components/Checklist";
 import { Banner, Field, InlineError, PageHeader } from "../components/Layout";
 import { useToasts } from "../components/Toasts";
 import type { CheckFixLink } from "../domain/checks";
-import { CONTROLLER_OFFSET, MAX_PROXY_PORT, settingsEditable, settingsProblems } from "../domain/settings";
+import {
+  CONTROLLER_OFFSET,
+  MAX_PROXY_PORT,
+  protectionBackendLabels,
+  settingsEditable,
+  settingsProblems,
+} from "../domain/settings";
 
 const connectionChecks: readonly CheckId[] = ["client", "core", "mixin", "proxy", "controller", "adapter"];
 
@@ -64,7 +70,8 @@ export function ConnectionPage() {
     try {
       const result = await api.detectClient();
       if (result.settings) {
-        dispatch({ type: "editSettings", settings: result.settings });
+        const { client_path, adapter, proxy_port } = result.settings;
+        edit({ client_path, adapter, proxy_port });
         setTouched({ client_path: true, adapter: true, proxy_port: true });
       }
       setDetection({
@@ -139,8 +146,7 @@ export function ConnectionPage() {
             </Button>
           }
         >
-          Чтобы сменить v2rayN, адаптер или порт, сначала выключи защиту. Иначе правила брандмауэра разойдутся
-          с новыми настройками.
+          Чтобы изменить подключение или способ защиты, сначала выключи защиту.
         </Banner>
       )}
 
@@ -258,6 +264,24 @@ export function ConnectionPage() {
           а если её нет — порт прокси + {CONTROLLER_OFFSET}. Через контроллер он узнаёт режим, TUN и выбранные
           серверы.
         </p>
+
+        <Field label="Способ защиты" hint="WFP — тестовый режим для Windows Home.">
+          {(props) => (
+            <select
+              {...props}
+              value={settings.protection_backend}
+              disabled={locked}
+              onChange={(event) =>
+                edit({
+                  protection_backend: event.target.value === "wfp" ? "wfp" : "group_policy",
+                })
+              }
+            >
+              <option value="group_policy">{protectionBackendLabels.group_policy}</option>
+              <option value="wfp">{protectionBackendLabels.wfp}</option>
+            </select>
+          )}
+        </Field>
 
         {saveError && <InlineError>{saveError}</InlineError>}
         <div className="form-actions">

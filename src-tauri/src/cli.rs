@@ -2,7 +2,7 @@ use crate::{
     core_rules,
     diagnose::diagnose,
     rules::{config_snapshot, edit_rules, load_rules, upsert_rule, ConfigSnapshot, DIRECT_DEFAULT},
-    settings::{edit_settings, load_settings, open_client},
+    settings::{edit_settings, load_settings, open_client, ProtectionBackend},
     status::{active_rules, apply_protection_headless, read_status, read_vpn_targets, Action},
     Result,
 };
@@ -76,6 +76,8 @@ enum SettingsCommand {
         adapter: Option<String>,
         #[arg(long)]
         proxy_port: Option<u16>,
+        #[arg(long, value_enum)]
+        protection_backend: Option<ProtectionBackend>,
     },
 }
 
@@ -97,6 +99,22 @@ enum ProcessCommand {
         #[arg(long, required = true)]
         confirm: bool,
     },
+    /// View or change the WFP network block for a process group.
+    Network {
+        group: String,
+        #[arg(value_enum, default_value_t = GroupNetworkAction::Status)]
+        action: GroupNetworkAction,
+        /// Confirm applying a persistent network block.
+        #[arg(long)]
+        confirm: bool,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum GroupNetworkAction {
+    Status,
+    Block,
+    Unblock,
 }
 
 #[derive(Subcommand)]
@@ -188,9 +206,14 @@ fn execute(command: Command) -> Result<Value> {
                     client_path,
                     adapter,
                     proxy_port,
+                    protection_backend,
                 } => {
-                    if client_path.is_none() && adapter.is_none() && proxy_port.is_none() {
-                        return Err("Укажи хотя бы одно поле подключения.".into());
+                    if client_path.is_none()
+                        && adapter.is_none()
+                        && proxy_port.is_none()
+                        && protection_backend.is_none()
+                    {
+                        return Err("Укажи хотя бы одну настройку.".into());
                     }
                     edit_settings(None, |mut current| {
                         if let Some(value) = client_path {
@@ -201,6 +224,9 @@ fn execute(command: Command) -> Result<Value> {
                         }
                         if let Some(value) = proxy_port {
                             current.proxy_port = value;
+                        }
+                        if let Some(value) = protection_backend {
+                            current.protection_backend = value;
                         }
                         current
                     })?
@@ -291,6 +317,19 @@ fn execute(command: Command) -> Result<Value> {
                     Ok(json!({ "result": result }))
                 }
                 ProcessCommand::Stop { confirm: false, .. } => Err("Требуется --confirm.".into()),
+                ProcessCommand::Network {
+                    group,
+                    action,
+                    confirm,
+                } => {
+                    let blocked = match action {
+                        GroupNetworkAction::Status => None,
+                        GroupNetworkAction::Block if confirm => Some(true),
+                        GroupNetworkAction::Block => return Err("Требуется --confirm.".into()),
+                        GroupNetworkAction::Unblock => Some(false),
+                    };
+                    Ok(json!({"state": crate::process_groups::network_access(&group, blocked)?}))
+                }
             }
         }
         Command::StartClient => {

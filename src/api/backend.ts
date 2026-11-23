@@ -125,6 +125,9 @@ export const api = {
     call("save_process_groups", { config, original }),
   runProcessGroup: (id: string, stop: boolean, original: ProcessGroupsConfig): Promise<Outcome> =>
     call("run_process_group", { id, stop, original }),
+  processNetworkStates: () => call("process_network_states"),
+  setProcessNetwork: (id: string, blocked: boolean, original: ProcessGroupsConfig) =>
+    call("set_process_network", { id, blocked, original }),
   changeProtection: (action: ProtectionAction) => call("change_protection", { action }),
   guardStatus: (): Promise<Status> => call("guard_status"),
   diagnose: (): Promise<Diagnosis> => call("diagnose"),

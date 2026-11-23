@@ -926,6 +926,7 @@ mod tests {
                 client_path: client.to_string_lossy().into_owned(),
                 adapter: "TestTun".into(),
                 proxy_port: 18761,
+                ..Settings::default()
             },
             _dir: dir,
         }
