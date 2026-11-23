@@ -1,6 +1,7 @@
 //! Stage reporting for `change_protection`. The elevated worker's PowerShell
-//! writes `{"action","stage","at"}` to a file in `storage()`; the panel polls
-//! it and forwards each new stage as a `guard-progress` event.
+//! writes `{"action","stage","at"}` to a file in the protected state folder
+//! (`%ProgramData%\TunnelGuard`); the panel polls it and forwards each new
+//! stage as a `guard-progress` event.
 
 use crate::status::Action;
 use serde::{Deserialize, Serialize};

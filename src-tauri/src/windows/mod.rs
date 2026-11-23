@@ -1,10 +1,12 @@
+mod system;
 mod wfp;
+pub(crate) use system::system_directory;
 pub(crate) use wfp::group_network;
 
 use crate::{
     core_rules::load_generated,
     progress::{parse_progress, Progress, ProgressStage, PROGRESS_FILE},
-    settings::{client_path, load_settings, lock_config, storage, ProtectionBackend},
+    settings::{client_path, load_settings, storage_path, ProtectionBackend},
     status::{core_routes_tunnel, now_ms, Action, GuardState, Status, StatusWarning},
     Result,
 };
@@ -51,29 +53,40 @@ fn powershell(action: &str) -> Result<Output> {
     run_script(action, None, &[])
 }
 
-/// Variables that make PowerShell or .NET load code from elsewhere. The
-/// script runs elevated, so it must not inherit them from the user's session.
-fn loads_foreign_code(name: &str) -> bool {
-    let name = name.to_ascii_uppercase();
-    ["COR_", "CORECLR_", "COMPLUS_", "DOTNET_"]
-        .iter()
-        .any(|prefix| name.starts_with(prefix))
-        || matches!(
-            name.as_str(),
-            "PSEXECUTIONPOLICYPREFERENCE" | "__PSLOCKDOWNPOLICY" | "PSMODULEPATH"
-        )
+/// Variables the script may inherit. Everything else is dropped: the script
+/// runs elevated, and the user's environment (including `HKCU\Environment`)
+/// could otherwise redirect .NET profilers, PowerShell modules, `SystemRoot`
+/// or the folders curl and PowerShell read their settings from.
+fn inherited_variable(name: &str) -> bool {
+    [
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "USERNAME",
+        "USERDOMAIN",
+        "COMPUTERNAME",
+        "PATHEXT",
+        "OS",
+        "PROCESSOR_ARCHITECTURE",
+        "NUMBER_OF_PROCESSORS",
+    ]
+    .iter()
+    .any(|known| known.eq_ignore_ascii_case(name))
 }
 
 fn run_script(action: &str, progress: Option<&Path>, extra: &[(&str, &OsStr)]) -> Result<Output> {
-    let system_root = PathBuf::from(env::var_os("SystemRoot").ok_or("SystemRoot не найден.")?);
-    let system = system_root.join("System32");
+    let system_root = system::windows_directory()?;
+    let system = system::system_directory()?;
     let shell = system.join("WindowsPowerShell").join("v1.0");
     let executable = shell.join("powershell.exe");
-    let command = format!("& {{\n{SCRIPT}\n}} -Action $env:TUNNEL_GUARD_ACTION -SettingsPath $env:TUNNEL_GUARD_SETTINGS -ProgressPath $env:TUNNEL_GUARD_PROGRESS");
+    let command = format!("& {{\n{SCRIPT}\n}} -Action $env:TUNNEL_GUARD_ACTION -SettingsPath $env:TUNNEL_GUARD_SETTINGS -StatePath $env:TUNNEL_GUARD_STATE -ProgressPath $env:TUNNEL_GUARD_PROGRESS");
     let mut process = Command::new(executable);
-    for (name, _) in env::vars_os() {
-        if name.to_str().is_some_and(loads_foreign_code) {
-            process.env_remove(name);
+    process.env_clear();
+    for (name, value) in env::vars_os() {
+        if name.to_str().is_some_and(inherited_variable) {
+            process.env(name, value);
         }
     }
     let path = env::join_paths([
@@ -83,28 +96,29 @@ fn run_script(action: &str, progress: Option<&Path>, extra: &[(&str, &OsStr)]) -
         shell.clone(),
     ])
     .map_err(|error| error.to_string())?;
+    let drive: PathBuf = system_root.components().take(1).collect();
     process
         .args(["-NoProfile", "-NonInteractive", "-Command", &command])
+        .env("SystemRoot", &system_root)
+        .env("windir", &system_root)
+        .env("SystemDrive", drive)
+        .env("ComSpec", system.join("cmd.exe"))
         // Only the built-in modules: a user-writable module path would let an
         // unelevated process plant NetTCPIP or NetSecurity for the worker.
         .env("PSModulePath", shell.join("Modules"))
         .env("PATH", path)
         .env("TUNNEL_GUARD_ACTION", action)
-        .env("TUNNEL_GUARD_SETTINGS", storage()?.join("settings.json"));
-    match progress {
-        Some(path) => process.env("TUNNEL_GUARD_PROGRESS", path),
-        None => process.env_remove("TUNNEL_GUARD_PROGRESS"),
-    };
+        .env(
+            "TUNNEL_GUARD_SETTINGS",
+            storage_path()?.join("settings.json"),
+        )
+        .env("TUNNEL_GUARD_STATE", system::state_directory()?);
+    if let Some(path) = progress {
+        process.env("TUNNEL_GUARD_PROGRESS", path);
+    }
     for (key, value) in extra {
         process.env(key, value);
     }
-    process
-        .env_remove("TUNNEL_GUARD_CONTROLLER_PORT")
-        .env_remove("TUNNEL_GUARD_CONTROLLER_SECRET")
-        .env_remove("TUNNEL_GUARD_WFP_WORKER")
-        .env_remove(wfp::CORE_ENV)
-        .env_remove(wfp::ADAPTER_ENV)
-        .env_remove(wfp::CORE_PID_ENV);
     if matches!(action, "WfpEnable" | "WfpUpgrade" | "WfpDisable") {
         process.env(
             "TUNNEL_GUARD_WFP_WORKER",
@@ -289,7 +303,9 @@ unsafe fn process_path(pid: u32) -> Option<PathBuf> {
 /// Entry point of the GUI's elevated `--firewall-worker`: like `worker`, and
 /// additionally lets the script report stages to the progress file.
 pub fn elevated_worker(args: &[String]) -> i32 {
-    let progress = storage().ok().map(|dir| dir.join(PROGRESS_FILE));
+    let progress = system::state_directory()
+        .ok()
+        .map(|dir| dir.join(PROGRESS_FILE));
     run_worker(args, progress.as_deref())
 }
 
@@ -338,12 +354,15 @@ fn run_worker(args: &[String], progress: Option<&Path>) -> i32 {
     if !is_admin() {
         return 22;
     }
-    let Ok(_config_lock) = lock_config() else {
-        return 28;
-    };
+    // The global mutex serialises workers. The per-user configuration lock
+    // is not taken here: creating it would be an elevated write to a folder
+    // the user controls.
     let Some(_policy_lock) = PolicyLock::acquire() else {
         return 28;
     };
+    if system::secure_state_directory().is_err() {
+        return 32;
+    }
     let Ok(wfp) = wfp::status(None) else {
         return 31;
     };
@@ -403,7 +422,11 @@ struct ProgressFile {
 impl ProgressFile {
     fn start(action: Action) -> Self {
         let file = Self {
-            path: storage().ok().map(|dir| dir.join(PROGRESS_FILE)),
+            // Written by the elevated worker into the protected state folder;
+            // the panel only reads it (removal there is best effort).
+            path: system::state_directory()
+                .ok()
+                .map(|dir| dir.join(PROGRESS_FILE)),
             action,
             since: now_ms(),
         };
@@ -550,11 +573,11 @@ fn elevated_result(
     parameters: &str,
     wait: impl FnOnce(HANDLE) -> u32,
 ) -> Result<u32> {
-    let executable = wide(
-        env::current_exe()
-            .map_err(|error| error.to_string())?
-            .as_os_str(),
-    );
+    let current = env::current_exe().map_err(|error| error.to_string())?;
+    if !cfg!(debug_assertions) && !system::installed_for_all_users(&current) {
+        return Err("Эта копия Tunnel Guard лежит в папке пользователя, и запускать её с правами администратора небезопасно. Установи Tunnel Guard заново (установщик ставит его в Program Files) и удали старую копию.".into());
+    }
+    let executable = wide(current.as_os_str());
     let verb = wide(OsStr::new("runas"));
     let parameters = wide(OsStr::new(parameters));
     let mut request = SHELLEXECUTEINFOW {
@@ -600,6 +623,7 @@ pub fn worker_result(code: u32) -> Result<()> {
         29 => Err("Проверь путь к v2rayN, имя TUN-адаптера и порт прокси во вкладке «Подключение».".into()),
         30 => Err("Windows не применила ожидаемую политику брандмауэра. Проверь фактический статус защиты в панели.".into()),
         31 => Err("Windows не подтвердила состояние фильтров WFP. Проверь фактический статус защиты в панели.".into()),
+        32 => Err("Не удалось подготовить защищённую папку %ProgramData%\\TunnelGuard. Если её создал не администратор, удали её и повтори.".into()),
         _ => Err(format!("Windows не завершила изменение правил. Код {code}.")),
     }
 }
@@ -611,6 +635,31 @@ fn wide(value: &OsStr) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn elevated_script_inherits_only_harmless_variables() {
+        for name in ["TEMP", "tmp", "UserProfile", "PATHEXT"] {
+            assert!(inherited_variable(name), "{name}");
+        }
+        for name in [
+            "SystemRoot",
+            "windir",
+            "PATH",
+            "PSModulePath",
+            "COR_PROFILER",
+            "COR_ENABLE_PROFILING",
+            "DOTNET_STARTUP_HOOKS",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "CURL_HOME",
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "TUNNEL_GUARD_CONTROLLER_SECRET",
+            "TUNNEL_GUARD_WFP_CORE",
+        ] {
+            assert!(!inherited_variable(name), "{name}");
+        }
+    }
 
     #[test]
     fn failure_codes_follow_stage_marker() {

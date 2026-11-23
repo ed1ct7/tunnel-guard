@@ -441,7 +441,7 @@ fn queried<T>(
     Ok(Some(Allocation::new(ptr)?))
 }
 
-struct ObjectSecurity(PSECURITY_DESCRIPTOR);
+pub(super) struct ObjectSecurity(PSECURITY_DESCRIPTOR);
 
 impl ObjectSecurity {
     fn new() -> Result<Self> {
@@ -450,7 +450,7 @@ impl ObjectSecurity {
         Self::from_sddl("O:BAG:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;AU)")
     }
 
-    fn from_sddl(sddl: &str) -> Result<Self> {
+    pub(super) fn from_sddl(sddl: &str) -> Result<Self> {
         let sddl = wide(OsStr::new(sddl));
         let mut sd = null_mut();
         let ok = unsafe {
@@ -465,6 +465,10 @@ impl ObjectSecurity {
             return Err(io::Error::last_os_error().to_string());
         }
         Ok(Self(sd))
+    }
+
+    pub(super) fn descriptor(&self) -> PSECURITY_DESCRIPTOR {
+        self.0
     }
 
     /// The self-relative descriptor as a WFP condition value.
@@ -857,8 +861,7 @@ fn connection(core: &Path, adapter: &str) -> Result<Connection> {
     {
         return Err("Имя TUN-адаптера не прошло проверку.".into());
     }
-    let system_root = env::var_os("SystemRoot").ok_or("SystemRoot не найден.")?;
-    let dhcp = Path::new(&system_root).join("System32").join("svchost.exe");
+    let dhcp = super::system::system_directory()?.join("svchost.exe");
     Ok(Connection {
         luid: interface_luid(adapter)?,
         mihomo: application_id(core)?,
@@ -997,26 +1000,26 @@ fn upgrade() -> Result<()> {
     transaction.commit()
 }
 
-/// Undoes a failed upgrade: puts the previously verified `V1` set back in the
-/// same transaction that removes `V2`.
+/// Undoes a committed upgrade whose check failed: puts the previously
+/// verified `V1` set back in the same transaction that removes `V2`. A `V1`
+/// that is still there (the upgrade never committed) is left as it is.
 fn rollback() -> Result<()> {
     let connection = checked_connection()?;
     let engine = Engine::open()?;
     let security = ObjectSecurity::new()?;
     let transaction = engine.write()?;
-    delete_policy(&engine, Policy::V2)?;
-    let old = inspect(&engine, Policy::V1, Some(connection.luid))?;
-    if !(old.active() && old.tunnel_matches) {
-        delete_policy(&engine, Policy::V1)?;
-        stage_filters(&engine, &security, Policy::V1, &connection)?;
-        add_sublayer(
-            &engine,
-            &security,
-            Policy::V1,
-            Policy::V1.verified(),
-            "Tunnel Guard (проверено)",
-        )?;
+    if inspect(&engine, Policy::V1, None)?.any {
+        return Err("Прежний набор фильтров на месте; откатывать нечего.".into());
     }
+    delete_policy(&engine, Policy::V2)?;
+    stage_filters(&engine, &security, Policy::V1, &connection)?;
+    add_sublayer(
+        &engine,
+        &security,
+        Policy::V1,
+        Policy::V1.verified(),
+        "Tunnel Guard (проверено)",
+    )?;
     transaction.commit()
 }
 

@@ -14,7 +14,7 @@ const WEIGHT: u16 = u16::MAX;
 const LEGACY_WEIGHT: u16 = 0xe100;
 
 fn group_owner(id: &str) -> Result<[u8; 32]> {
-    let storage = settings::storage()?;
+    let storage = settings::storage_path()?;
     let mut hash = Sha256::new();
     hash.update(b"TunnelGuard group network v1\0");
     hash.update(storage.to_string_lossy().to_lowercase().as_bytes());

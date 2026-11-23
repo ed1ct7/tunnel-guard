@@ -3,6 +3,8 @@ param(
     [ValidateSet('Status','Rules','Targets','Diagnose','Preflight','Enable','Disable','CleanLegacy','WfpEnable','WfpUpgrade','WfpDisable')]
     [string] $Action,
     [string] $SettingsPath,
+    # %ProgramData%\TunnelGuard: only Administrators and SYSTEM write here.
+    [string] $StatePath,
     [string] $ProgressPath
 )
 
@@ -16,8 +18,12 @@ $owned = @('TunnelGuard-Tunnel','TunnelGuard-Mihomo','TunnelGuard-Dhcp')
 $legacy = @('Server4KillSwitch-Tunnel','Server4KillSwitch-Mihomo','Server4KillSwitch-Steam',
     'Server4KillSwitch-SteamService','Server4KillSwitch-SteamWebHelper','Server4KillSwitch-Deadlock',
     'Server4KillSwitch-Dhcp4')
-$backup = Join-Path (Split-Path -Parent $SettingsPath) 'original-policy.xml'
-$curl = Join-Path $env:SystemRoot 'System32\curl.exe'
+$backup = Join-Path $StatePath 'original-policy.xml'
+# Versions up to 0.6.0-preview.4 kept the backup in the user's folder, where
+# any unelevated program can edit it. It is only read, validated and never
+# deleted from the elevated side.
+$legacyBackup = Join-Path (Split-Path -Parent $SettingsPath) 'original-policy.xml'
+$curl = Join-Path ([Environment]::SystemDirectory) 'curl.exe'
 
 $progressAction = @{Enable='enable';Disable='disable';CleanLegacy='clean_legacy';WfpEnable='enable';WfpUpgrade='enable';WfpDisable='disable'}[$Action]
 
@@ -71,10 +77,33 @@ function Remove-GuardRules([string[]] $Names) {
     }
 }
 
+# The saved profile values, checked. From the user-writable legacy backup a
+# switched-off firewall is not restored: that file may have been edited.
+function Read-PolicyBackup {
+    $legacy = -not (Test-Path -LiteralPath $backup)
+    $path = if ($legacy) { $legacyBackup } else { $backup }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'The backup of the previous policy is missing.' }
+    $saved = @(Import-Clixml -LiteralPath $path)
+    $names = @($saved | ForEach-Object { [string] $_.Name } | Sort-Object -Unique)
+    if ($saved.Count -ne 3 -or ($names -join ',') -ne 'Domain,Private,Public') {
+        throw 'The firewall backup is incomplete.'
+    }
+    foreach ($item in $saved) {
+        $enabled = [string] $item.Enabled
+        $outbound = [string] $item.DefaultOutboundAction
+        $local = [string] $item.AllowLocalFirewallRules
+        if ($enabled -notin @('True','False','NotConfigured') -or
+            $outbound -notin @('Allow','Block','NotConfigured') -or
+            $local -notin @('True','False','NotConfigured')) {
+            throw 'The firewall backup is invalid.'
+        }
+        if ($legacy -and $enabled -eq 'False') { $enabled = 'NotConfigured' }
+        [pscustomobject] @{Name=[string] $item.Name;Enabled=$enabled;DefaultOutboundAction=$outbound;AllowLocalFirewallRules=$local}
+    }
+}
+
 function Restore-Guard {
-    if (-not (Test-Path -LiteralPath $backup)) { throw 'The backup of the previous policy is missing.' }
-    $saved = @(Import-Clixml -LiteralPath $backup)
-    if ($saved.Count -ne 3) { throw 'The firewall backup is incomplete.' }
+    $saved = @(Read-PolicyBackup)
     foreach ($item in $saved) {
         Set-NetFirewallProfile -PolicyStore $store -Name $item.Name -Enabled $item.Enabled `
             -DefaultOutboundAction $item.DefaultOutboundAction -AllowLocalFirewallRules $item.AllowLocalFirewallRules
@@ -84,7 +113,7 @@ function Restore-Guard {
     if (Get-NetFirewallRule -PolicyStore ActiveStore -Name 'TunnelGuard-*' -ErrorAction SilentlyContinue) {
         throw 'Some guard rules are still active. The backup was kept.'
     }
-    Remove-Item -LiteralPath $backup
+    if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup }
 }
 
 function Invoke-WfpWorker([string] $Operation) {
@@ -116,7 +145,9 @@ function Test-Tcp([string] $Address) {
 
 function Get-ProbeIP([string] $Url, [string] $Proxy) {
     $options = if ($Proxy) { @('--noproxy','invalid.invalid','--proxy',$Proxy) } else { @('--noproxy','*') }
-    $value = & $curl @options -4 --connect-timeout 4 --max-time 8 -fsS $Url 2>$null
+    # -q must come first: it stops curl from reading a _curlrc the unelevated
+    # user controls (extra output files, proxies, resolve overrides).
+    $value = & $curl -q @options --proto '=https' --max-filesize 64 -4 --connect-timeout 4 --max-time 8 -fsS $Url 2>$null
     if ($LASTEXITCODE -ne 0 -or $value -notmatch '^\d+\.\d+\.\d+\.\d+$') {
         throw 'The HTTPS verification did not complete.'
     }
@@ -347,6 +378,7 @@ try {
     $stage = 'VERIFY'
     $hostRoutes = @()
     $started = $false
+    $upgraded = $false
     try {
         foreach ($route in $probes) {
             if (Get-NetRoute -DestinationPrefix $route.prefix -ErrorAction SilentlyContinue) {
@@ -363,6 +395,7 @@ try {
             Set-GuardProgress 'apply'
             $started = $true
             Invoke-WfpWorker $(if ($upgrade) { 'Upgrade' } else { 'Apply' })
+            $upgraded = $upgrade
         } else {
             $stage = 'POLICY'
             Set-GuardProgress 'backup'
@@ -398,8 +431,10 @@ try {
             $stage = 'RESTORE'
             Set-GuardProgress 'restore'
             if ($upgrade) {
-                # Put the previously verified set back instead of opening traffic.
-                Invoke-WfpWorker 'Rollback'
+                # A failed Upgrade changed nothing (one transaction). After a
+                # committed one, put the previously verified set back instead
+                # of opening traffic.
+                if ($upgraded) { Invoke-WfpWorker 'Rollback' }
             } elseif ($wfp) {
                 Invoke-WfpWorker 'Remove'
             } else {

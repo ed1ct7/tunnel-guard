@@ -1,5 +1,5 @@
 use crate::{
-    settings::{atomic_write, lock_config, storage},
+    settings::{atomic_write, lock_config, storage, storage_path},
     Result,
 };
 use serde::{Deserialize, Serialize};
@@ -181,7 +181,7 @@ impl Groups {
 
 #[tauri::command]
 pub(crate) fn load_process_groups() -> Result<Groups> {
-    let path = storage()?.join("process-groups.json");
+    let path = storage_path()?.join("process-groups.json");
     match fs::read(path) {
         Ok(raw) => {
             let raw = raw.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&raw);
@@ -412,15 +412,15 @@ pub(crate) async fn set_process_network(
 #[cfg(windows)]
 fn run_windows(selectors: &[Selector], stop: bool) -> Result<Value> {
     use std::{
-        env,
         io::Write,
         os::windows::process::CommandExt,
-        path::PathBuf,
         process::{Command, Stdio},
     };
     use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
-    let executable = PathBuf::from(env::var_os("SystemRoot").ok_or("SystemRoot не найден.")?)
-        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let executable = crate::windows::system_directory()?
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe");
     let script = include_str!("windows/process-groups.ps1");
     let request = serde_json::to_vec(&serde_json::json!({ "selectors": selectors, "stop": stop }))
         .map_err(|error| error.to_string())?;

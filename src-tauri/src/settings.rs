@@ -35,7 +35,8 @@ impl Default for Settings {
     }
 }
 
-pub(crate) fn storage() -> Result<PathBuf> {
+/// The per-user settings folder, without creating it.
+pub(crate) fn storage_path() -> Result<PathBuf> {
     let base = if cfg!(windows) {
         env::var_os("LOCALAPPDATA").map(PathBuf::from)
     } else {
@@ -44,7 +45,17 @@ pub(crate) fn storage() -> Result<PathBuf> {
             .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
     }
     .ok_or("Не удалось определить папку настроек.")?;
-    let dir = base.join("TunnelGuard");
+    Ok(base.join("TunnelGuard"))
+}
+
+/// The per-user settings folder, created on first use. An elevated process
+/// does not create it: the user owns the parent and could redirect the write.
+pub(crate) fn storage() -> Result<PathBuf> {
+    let dir = storage_path()?;
+    #[cfg(windows)]
+    if crate::windows::is_admin() {
+        return Ok(dir);
+    }
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     Ok(dir)
 }
@@ -72,7 +83,7 @@ pub(crate) fn lock_config() -> Result<fs::File> {
 }
 
 pub(crate) fn load_settings() -> Result<Settings> {
-    let path = storage()?.join("settings.json");
+    let path = storage_path()?.join("settings.json");
     match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "Файл настроек повреждён.".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
